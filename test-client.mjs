@@ -41,8 +41,8 @@ async function run() {
   console.log("\n=== claude-app-server smoke test ===\n");
 
   // 1. initialize
-  const initRes = await send({ jsonrpc: "2.0", method: "initialize", params: {
-    client: { name: "test-client", version: "1.0.0" },
+  const initRes = await send({ method: "initialize", params: {
+    clientInfo: { name: "test-client", version: "1.0.0" },
     cwd: process.cwd(),
   }, id: 1 });
   console.log("initialize:", initRes.error ?? `OK — ${JSON.stringify(initRes.result?.server)}`);
@@ -51,39 +51,39 @@ async function run() {
   await new Promise(r => setTimeout(r, 50));
 
   // 2. model/list
-  const modelsRes = await send({ jsonrpc: "2.0", method: "model/list", id: 2 });
+  const modelsRes = await send({ method: "model/list", id: 2 });
   console.log("model/list:", modelsRes.error ?? `OK — ${modelsRes.result.models.length} models`);
 
   // 3. skills/list
-  const skillsRes = await send({ jsonrpc: "2.0", method: "skills/list", id: 3 });
+  const skillsRes = await send({ method: "skills/list", id: 3 });
   console.log("skills/list:", skillsRes.error ?? `OK — ${skillsRes.result.skills.length} skills`);
 
   // 4. thread/start
-  const threadRes = await send({ jsonrpc: "2.0", method: "thread/start", params: {
+  const threadRes = await send({ method: "thread/start", params: {
     cwd: process.cwd(),
     permission_mode: "acceptEdits",
   }, id: 4 });
-  const threadId = threadRes.result?.thread_id;
+  const threadId = threadRes.result?.thread?.id;
   console.log("thread/start:", threadRes.error ?? `OK — thread_id=${threadId}`);
 
   // 5. thread/resume
-  const resumeRes = await send({ jsonrpc: "2.0", method: "thread/resume", params: { thread_id: threadId }, id: 5 });
-  console.log("thread/resume:", resumeRes.error ?? `OK — ${resumeRes.result.turns.length} turns`);
+  const resumeRes = await send({ method: "thread/resume", params: { thread_id: threadId }, id: 5 });
+  console.log("thread/resume:", resumeRes.error ?? `OK — ${resumeRes.result.thread.turns.length} turns`);
 
-  // 6. thread/fork
-  const forkRes = await send({ jsonrpc: "2.0", method: "thread/fork", params: { thread_id: threadId }, id: 6 });
-  console.log("thread/fork:", forkRes.error ?? `OK — forked_thread=${forkRes.result.thread_id}`);
+  // 6. thread/fork before any Claude session exists should fail
+  const forkRes = await send({ method: "thread/fork", params: { thread_id: threadId }, id: 6 });
+  console.log("thread/fork (no session):", forkRes.error ? "OK (expected error)" : "UNEXPECTED success");
 
   // 7. Error handling — call a non-existent method
-  const badRes = await send({ jsonrpc: "2.0", method: "nonexistent", id: 7 });
+  const badRes = await send({ method: "nonexistent", id: 7 });
   console.log("unknown method:", badRes.error ? `OK (expected error ${badRes.error.code})` : "UNEXPECTED success");
 
   // 8. Error handling — turn/steer with no active turn
-  const steerRes = await send({ jsonrpc: "2.0", method: "turn/steer", params: { thread_id: threadId, content: "hi" }, id: 8 });
+  const steerRes = await send({ method: "turn/steer", params: { thread_id: threadId, content: "hi" }, id: 8 });
   console.log("turn/steer (no active turn):", steerRes.error ? `OK (expected error)` : "UNEXPECTED success");
 
   // 9. app/list
-  const appRes = await send({ jsonrpc: "2.0", method: "app/list", id: 9 });
+  const appRes = await send({ method: "app/list", id: 9 });
   console.log("app/list:", appRes.error ?? `OK — ${appRes.result.apps.length} apps`);
 
   console.log(`\n✓ ${notifCount} notification(s) received`);

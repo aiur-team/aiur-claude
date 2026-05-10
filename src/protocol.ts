@@ -7,7 +7,7 @@ export type RpcId = string | number | null;
 
 /** A request from client → server (has an id, expects a response). */
 export interface RpcRequest {
-  jsonrpc: "2.0";
+  jsonrpc?: "2.0";
   method: string;
   params?: unknown;
   id: RpcId;
@@ -15,7 +15,7 @@ export interface RpcRequest {
 
 /** A notification (no id, no response expected). Direction: both ways. */
 export interface RpcNotification {
-  jsonrpc: "2.0";
+  jsonrpc?: "2.0";
   method: string;
   params?: unknown;
 }
@@ -97,7 +97,8 @@ export function parseLine(line: string): RpcIncoming | null {
   if (!trimmed) return null;
   try {
     const parsed = JSON.parse(trimmed) as RpcMessage;
-    if (parsed.jsonrpc !== "2.0" || !("method" in parsed)) return null;
+    if (!("method" in parsed)) return null;
+    if ("jsonrpc" in parsed && parsed.jsonrpc !== "2.0") return null;
     return parsed as RpcIncoming;
   } catch {
     return null;

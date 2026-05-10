@@ -147,10 +147,12 @@ export class ClaudeAppServer {
   private initialize(params: unknown, conn: ConnectionState): unknown {
     const p = (params ?? {}) as {
       client?: { name?: string; version?: string };
+      clientInfo?: { name?: string; version?: string };
       cwd?: string;
     };
+    const client = p.clientInfo ?? p.client;
     conn.initialized = true;
-    conn.client_info = { name: p.client?.name ?? "unknown", version: p.client?.version ?? "0.0.0" };
+    conn.client_info = { name: client?.name ?? "unknown", version: client?.version ?? "0.0.0" };
     setImmediate(() => conn.send(notif("initialized", { server: SERVER_NAME })));
     return {
       server: { name: SERVER_NAME, version: SERVER_VERSION },
