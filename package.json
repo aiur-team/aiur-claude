@@ -1,12 +1,12 @@
 {
-  "name": "symphony-claude",
-  "version": "1.0.0",
-  "description": "A JSON-RPC 2.0 Claude Code App Server conforming to the OpenAI Symphony Codex protocol spec.",
+  "name": "aiur-claude",
+  "version": "1.1.0",
+  "description": "A JSON-RPC 2.0 Claude Code App Server conforming to the OpenAI Codex app-server protocol spec.",
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
   "bin": {
-    "symphony-claude": "dist/index.js"
+    "aiur-claude": "dist/index.js"
   },
   "files": [
     "dist",

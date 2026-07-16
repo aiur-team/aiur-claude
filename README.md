@@ -1,6 +1,6 @@
-# symphony-claude
+# aiur-claude
 
-A **JSON-RPC 2.0 Claude Code App Server** conforming to the **OpenAI Symphony Codex** protocol spec.
+A **JSON-RPC 2.0 Claude Code App Server** conforming to the **OpenAI Codex app-server** protocol spec.
 
 No API key required. Authentication is handled by the `claude` CLI (`claude auth`).
 
@@ -10,11 +10,10 @@ Clients communicate over **stdio** (default) or **WebSocket**, using newline-del
 
 ## Install
 
-### Homebrew
+### npm
 
 ```bash
-brew tap sapsaldog/symphony
-brew install symphony-claude
+npm install -g aiur-claude
 ```
 
 ### From source
@@ -37,22 +36,22 @@ pnpm run build
 
 ```bash
 # Start with WebSocket + QR code (recommended)
-symphony-claude start
+aiur-claude start
 
 # Custom port
-symphony-claude start --port 4000
+aiur-claude start --port 4000
 
 # Plain WebSocket (no TLS)
-symphony-claude start --no-tls
+aiur-claude start --no-tls
 
 # stdio mode (for piped/programmatic use)
-symphony-claude
+aiur-claude
 ```
 
 On startup you'll see:
 
 ```
-  symphony-claude  ·  WebSocket (TLS)
+  aiur-claude  ·  WebSocket (TLS)
   ─────────────────────────────────
   Local:    wss://localhost:3284?key=AbC123
   Network:  wss://192.168.x.x:3284
@@ -72,11 +71,11 @@ Scan the QR code from any device on the same Wi-Fi to connect.
 
 | Command | Transport | Notes |
 |---------|-----------|-------|
-| `symphony-claude start` | WebSocket :3284 | Shows QR code, binds to all interfaces |
-| `symphony-claude start --port N` | WebSocket :N | Custom port |
-| `symphony-claude start --no-tls` | WebSocket :3284 | Plain `ws://` (no TLS) |
-| `symphony-claude --transport ws` | WebSocket :3284 | No QR code |
-| `symphony-claude` | stdio | For piped/programmatic use |
+| `aiur-claude start` | WebSocket :3284 | Shows QR code, binds to all interfaces |
+| `aiur-claude start --port N` | WebSocket :N | Custom port |
+| `aiur-claude start --no-tls` | WebSocket :3284 | Plain `ws://` (no TLS) |
+| `aiur-claude --transport ws` | WebSocket :3284 | No QR code |
+| `aiur-claude` | stdio | For piped/programmatic use |
 
 ### `--no-tls`
 
@@ -99,12 +98,12 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 
 // Server → Client (response)
 { "jsonrpc": "2.0", "result": {
-    "server": { "name": "symphony-claude", "version": "1.0.0" },
+    "server": { "name": "aiur-claude", "version": "1.1.0" },
     "capabilities": { ... }
   }, "id": 1 }
 
 // Server → Client (notification, async)
-{ "jsonrpc": "2.0", "method": "initialized", "params": { "server": "symphony-claude" } }
+{ "jsonrpc": "2.0", "method": "initialized", "params": { "server": "aiur-claude" } }
 ```
 
 ---
@@ -209,7 +208,7 @@ When claude invokes a tool, the server sends a JSON-RPC **request** to the clien
 ## Example session (stdio)
 
 ```bash
-symphony-claude
+aiur-claude
 ```
 
 ```jsonc

@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * symphony-claude — entry point
+ * aiur-claude — entry point
  *
  * Wraps your locally installed `claude` CLI. No API key required.
  * Authentication is handled by Claude Code itself (run `claude auth` to log in).
  *
  * Usage:
- *   symphony-claude                          # stdio (default)
- *   symphony-claude start                    # wss on port 3284 + QR code
- *   symphony-claude start --no-tls           # ws (plain, no TLS) on port 3284
- *   symphony-claude start --port 4000        # custom port
- *   symphony-claude --transport ws           # WebSocket (legacy flags)
- *   symphony-claude --transport ws --no-tls  # plain ws (no TLS)
+ *   aiur-claude                          # stdio (default)
+ *   aiur-claude start                    # wss on port 3284 + QR code
+ *   aiur-claude start --no-tls           # ws (plain, no TLS) on port 3284
+ *   aiur-claude start --port 4000        # custom port
+ *   aiur-claude --transport ws           # WebSocket (legacy flags)
+ *   aiur-claude --transport ws --no-tls  # plain ws (no TLS)
  */
 
 import { ClaudeAppServer } from "./server.js";
@@ -37,13 +37,13 @@ function getVersion(): string {
 }
 
 const HELP = `
-symphony-claude — JSON-RPC 2.0 server wrapping Claude Code capabilities.
+aiur-claude — JSON-RPC 2.0 server wrapping Claude Code capabilities.
 
 USAGE
-  symphony-claude                    Run in stdio mode (default)
-  symphony-claude start              Run WebSocket server with QR code
-  symphony-claude start [OPTIONS]    WebSocket server with options
-  symphony-claude [OPTIONS]          stdio or WebSocket with legacy flags
+  aiur-claude                    Run in stdio mode (default)
+  aiur-claude start              Run WebSocket server with QR code
+  aiur-claude start [OPTIONS]    WebSocket server with options
+  aiur-claude [OPTIONS]          stdio or WebSocket with legacy flags
 
 SUBCOMMANDS
   start     Start WebSocket server on port 3284, show QR code to connect
@@ -57,11 +57,11 @@ OPTIONS
   --debug           Enable debug logging
 
 EXAMPLES
-  symphony-claude                          # stdio, e.g. for IDE integration
-  symphony-claude start                    # wss + QR code on port 3284
-  symphony-claude start --no-tls           # plain ws (no TLS)
-  symphony-claude start --port 4000        # custom port
-  symphony-claude --transport ws           # WebSocket (legacy, no QR)
+  aiur-claude                          # stdio, e.g. for IDE integration
+  aiur-claude start                    # wss + QR code on port 3284
+  aiur-claude start --no-tls           # plain ws (no TLS)
+  aiur-claude start --port 4000        # custom port
+  aiur-claude --transport ws           # WebSocket (legacy, no QR)
 
 Requires the Claude Code CLI. Install: https://claude.ai/code
 Then log in: claude auth
@@ -103,7 +103,7 @@ function printStartBanner(port: number, pairKey: string, tls: boolean): void {
   const localUrl = `${proto}://localhost:${port}?key=${pairKey}`;
 
   process.stderr.write("\n");
-  process.stderr.write(`  symphony-claude  ·  WebSocket${tls ? " (TLS)" : ""}\n`);
+  process.stderr.write(`  aiur-claude  ·  WebSocket${tls ? " (TLS)" : ""}\n`);
   process.stderr.write("  ─────────────────────────────────\n");
   process.stderr.write(`  Local:    ${localUrl}\n`);
   if (lan) {
@@ -179,7 +179,7 @@ function checkClaude(): string {
     return realpathSync(resolved);
   } catch {
     process.stderr.write(
-      "[symphony-claude] ERROR: `claude` CLI not found.\n" +
+      "[aiur-claude] ERROR: `claude` CLI not found.\n" +
         "Install Claude Code: https://claude.ai/code\n" +
         "Then log in: claude auth\n",
     );

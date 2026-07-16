@@ -38,7 +38,7 @@ function send(req) {
 }
 
 async function run() {
-  console.log("\n=== claude-app-server smoke test ===\n");
+  console.log("\n=== aiur-claude smoke test ===\n");
 
   // 1. initialize
   const initRes = await send({ method: "initialize", params: {
