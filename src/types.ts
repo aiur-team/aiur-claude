@@ -101,6 +101,11 @@ export interface Turn {
   };
   /** Cost in USD reported by the claude CLI. */
   cost_usd?: number;
+  /**
+   * Exact decimal for cost_usd as serialized by the CLI, captured from the
+   * raw NDJSON text before JSON.parse converts it to a float.
+   */
+  cost_usd_raw?: string;
 }
 
 // ─── Thread ───────────────────────────────────────────────────────────────────
@@ -134,6 +139,42 @@ export interface Thread {
 
   /** In-process MCP server exposing dynamicTools to the claude subprocess. */
   toolBridge?: DynamicToolBridge;
+
+  /**
+   * Billing relationship fact derived from the CLI init event's apiKeySource
+   * ("none" → subscription auth; anything else → API key).
+   */
+  accountType?: AccountType;
+}
+
+// ─── Rate limits ──────────────────────────────────────────────────────────────
+
+/** Non-identifying account billing fact: how the claude CLI is authenticated. */
+export type AccountType = "subscription" | "api_key" | "unknown";
+
+/**
+ * Sanitized rate-limit standing forwarded to the engine as `rate_limit/update`.
+ *
+ * Built by allowlist — only the fields below ever pass through. Identifying
+ * data (org/account ids, emails, tokens, session ids, raw headers) is never
+ * copied from the CLI event.
+ */
+export interface RateLimitStatus {
+  /** CLI-reported standing, e.g. "allowed", "allowed_warning", "rejected". */
+  status: string;
+  /**
+   * Percentage of the quota USED, on a 0–100 scale. Higher = closer to the
+   * limit; 95 means nearly exhausted. This is consumption, NOT remaining
+   * headroom. CLI values in [0, 1] are treated as a used fraction and
+   * scaled by 100.
+   */
+  used_percent?: number;
+  /** Unix epoch seconds when the current limit window resets. */
+  resets_at?: number;
+  /** Whether the account is a subscription or API-key account. */
+  account_type: AccountType;
+  /** Version string of the claude CLI that emitted the event. */
+  source_version: string;
 }
 
 // ─── Dynamic tools ────────────────────────────────────────────────────────────

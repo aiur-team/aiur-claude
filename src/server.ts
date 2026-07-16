@@ -18,7 +18,7 @@
  * invocations round-trip to the client as item/tool/call JSON-RPC requests.
  */
 
-import { execFileSync, spawn } from "child_process";
+import { execFile, execFileSync, spawn } from "child_process";
 import * as os from "os";
 import * as readline from "readline";
 import { v4 as uuid } from "uuid";
@@ -45,6 +45,7 @@ import {
 } from "./protocol.js";
 import type {
   ConnectionState, Thread, Turn, StoredItem, PermissionMode, DynamicToolSpec,
+  AccountType, RateLimitStatus,
 } from "./types.js";
 import { BUILTIN_SKILLS } from "./tools.js";
 import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dynamic-tools.js";
@@ -54,6 +55,88 @@ import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dyna
 /** Flatten a StoredItem for notification: merge {id, created_at} with item contents. */
 function flatItem(si: StoredItem): Record<string, unknown> {
   return { id: si.id, created_at: si.created_at, ...si.item };
+}
+
+/**
+ * Extract the exact serialized decimal for a top-level numeric key from raw
+ * JSON text, before JSON.parse rounds it through a JavaScript float.
+ *
+ * Scans the text tracking nesting depth and string state, so occurrences of
+ * the key inside string values or nested objects are never matched.
+ * Returns undefined if the key is absent or its value is not a plain number.
+ */
+export function extractTopLevelRawNumber(json: string, key: string): string | undefined {
+  let depth = 0;
+  let i = 0;
+  const n = json.length;
+  while (i < n) {
+    const ch = json[i];
+    if (ch === '"') {
+      const start = i + 1;
+      i++;
+      let escaped = false;
+      while (i < n) {
+        const c = json[i];
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') break;
+        i++;
+      }
+      const literal = json.slice(start, i);
+      i++; // past closing quote
+      if (depth === 1 && literal === key) {
+        while (i < n && /\s/.test(json[i])) i++;
+        if (json[i] !== ":") continue; // string value, not a key
+        i++;
+        while (i < n && /\s/.test(json[i])) i++;
+        const m = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(json.slice(i));
+        return m?.[0] || undefined;
+      }
+    } else if (ch === "{" || ch === "[") { depth++; i++; }
+    else if (ch === "}" || ch === "]") { depth--; i++; }
+    else i++;
+  }
+  return undefined;
+}
+
+/** Derive the account billing fact from the CLI init event's apiKeySource. */
+export function accountTypeFromApiKeySource(source: string | undefined): AccountType {
+  if (source === undefined) return "unknown";
+  return source === "none" ? "subscription" : "api_key";
+}
+
+/**
+ * Normalize a CLI utilization value to percent-of-quota USED (0–100 scale).
+ * Values in [0, 1] are read as a used fraction and scaled by 100.
+ */
+export function normalizeUsedPercent(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return value <= 1 ? value * 100 : value;
+}
+
+/**
+ * Build the sanitized rate-limit event forwarded to the engine.
+ *
+ * Redaction is by construction: the output is assembled field-by-field from
+ * an allowlist, so identifying data on the raw CLI event (org/account ids,
+ * emails, tokens, session ids, headers) can never pass through.
+ */
+export function sanitizeRateLimit(
+  info: RawRateLimitInfo | undefined,
+  accountType: AccountType,
+  sourceVersion: string,
+): RateLimitStatus {
+  const raw = info ?? {};
+  const usedPercent = normalizeUsedPercent(raw.utilization ?? raw.used_percent ?? raw.usedPercent);
+  const resetsAt = raw.resetsAt ?? raw.resets_at;
+  const out: RateLimitStatus = {
+    status: typeof raw.status === "string" ? raw.status : "unknown",
+    account_type: accountType,
+    source_version: sourceVersion,
+  };
+  if (usedPercent !== undefined) out.used_percent = usedPercent;
+  if (typeof resetsAt === "number" && Number.isFinite(resetsAt)) out.resets_at = resetsAt;
+  return out;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -102,6 +185,8 @@ export class ClaudeAppServer {
   private debug: boolean;
   /** Pending server→client requests (dynamic tool round-trips). */
   private engineCalls = new PendingEngineCalls();
+  /** claude CLI version (from `claude --version`), resolved once per server. */
+  private sourceVersion?: string;
 
   constructor(claudePath: string, debug = false) {
     this.claudePath = claudePath;
@@ -110,6 +195,18 @@ export class ClaudeAppServer {
 
   private log(...args: unknown[]): void {
     if (this.debug) process.stderr.write("[debug] " + args.join(" ") + "\n");
+  }
+
+  /** Resolve and cache the claude CLI version for source attribution. */
+  private async resolveSourceVersion(): Promise<string> {
+    if (this.sourceVersion === undefined) {
+      this.sourceVersion = await new Promise<string>((resolve) => {
+        execFile(this.claudePath, ["--version"], { encoding: "utf-8" }, (err, stdout) => {
+          resolve(err ? "unknown" : stdout.trim() || "unknown");
+        });
+      });
+    }
+    return this.sourceVersion;
   }
 
   // ── Entry point ────────────────────────────────────────────────────────────
@@ -383,6 +480,8 @@ export class ClaudeAppServer {
       await thread.toolBridge.start();
     }
 
+    await this.resolveSourceVersion();
+
     const args = this.buildClaudeArgs(thread, model);
     this.log(`spawn: ${this.claudePath} ${args.join(" ")}`);
     this.log(`cwd: ${thread.cwd}`);
@@ -444,7 +543,7 @@ export class ClaudeAppServer {
       let event: ClaudeStreamEvent;
       try { event = JSON.parse(trimmed) as ClaudeStreamEvent; } catch { continue; }
 
-      this.processClaudeEvent(event, thread, turn, conn, partialText, partialThink);
+      this.processClaudeEvent(event, thread, turn, conn, partialText, partialThink, trimmed);
     }
 
     // Wait for process to exit (listeners already registered above)
@@ -486,6 +585,10 @@ export class ClaudeAppServer {
       completed_at: turn.completed_at,
       ...(usagePayload  ? { usage: usagePayload }     : {}),
       ...(turn.cost_usd != null ? { cost_usd: turn.cost_usd } : {}),
+      // Exact decimal + source version so the engine can do precise accounting;
+      // cost_usd above stays float-converted for backward compatibility.
+      ...(turn.cost_usd_raw != null ? { cost_usd_raw: turn.cost_usd_raw } : {}),
+      ...(turn.cost_usd != null ? { cost_source_version: this.sourceVersion ?? "unknown" } : {}),
     }));
   }
 
@@ -532,13 +635,17 @@ export class ClaudeAppServer {
     conn: ConnectionState,
     partialText:  Map<string, string>,
     partialThink: Map<string, string>,
+    rawLine?: string,
   ): void {
     switch (event.type) {
 
       // ── system/init ─────────────────────────────────────────────────────
       case "system": {
-        if (event.subtype === "init" && event.session_id) {
-          thread.cliSessionId = event.session_id;
+        if (event.subtype === "init") {
+          if (event.session_id) thread.cliSessionId = event.session_id;
+          if (event.apiKeySource !== undefined) {
+            thread.accountType = accountTypeFromApiKeySource(event.apiKeySource);
+          }
         }
         break;
       }
@@ -653,6 +760,17 @@ export class ClaudeAppServer {
         break;
       }
 
+      // ── rate_limit_event (sanitized + forwarded) ─────────────────────────
+      case "rate_limit_event": {
+        const info = event.rate_limit_info ?? event.rateLimitInfo;
+        conn.send(notif("rate_limit/update", {
+          turn_id:    turn.id,
+          thread_id:  thread.id,
+          rate_limit: sanitizeRateLimit(info, thread.accountType ?? "unknown", this.sourceVersion ?? "unknown"),
+        }));
+        break;
+      }
+
       // ── result (turn complete) ───────────────────────────────────────────
       case "result": {
         // session_id may be updated (e.g. after a fork)
@@ -665,8 +783,16 @@ export class ClaudeAppServer {
 
         // Capture token usage and cost (if result arrives before process is killed)
         if (event.usage)  turn.usage    = event.usage;
-        if (event.total_cost_usd != null) turn.cost_usd = event.total_cost_usd;
-        else if (event.cost_usd != null)  turn.cost_usd = event.cost_usd;
+        const costKey =
+          event.total_cost_usd != null ? "total_cost_usd" :
+          event.cost_usd       != null ? "cost_usd"       : undefined;
+        if (costKey) {
+          turn.cost_usd = event[costKey];
+          // Exact decimal as serialized by the CLI, captured before float
+          // conversion; guarded so it always round-trips to the same float.
+          const raw = rawLine ? extractTopLevelRawNumber(rawLine, costKey) : undefined;
+          if (raw !== undefined && Number(raw) === turn.cost_usd) turn.cost_usd_raw = raw;
+        }
 
         // Forward permission denials so the client can show approval UI
         if (event.permission_denials && event.permission_denials.length > 0) {
@@ -721,10 +847,24 @@ interface ClaudeUsage {
   cache_creation_input_tokens?: number;
 }
 
+/**
+ * Rate-limit payload shapes emitted by claude CLI versions: snake_case or
+ * camelCase wrapper key, fraction or percent utilization, either reset key.
+ * All shapes normalize into the one RateLimitStatus schema.
+ */
+export interface RawRateLimitInfo {
+  status?: string;
+  utilization?: number;
+  used_percent?: number;
+  usedPercent?: number;
+  resetsAt?: number;
+  resets_at?: number;
+}
+
 type ClaudeStreamEvent =
-  | { type: "system";       subtype: string; session_id?: string; cwd?: string; tools?: string[]; model?: string; permissionMode?: string }
+  | { type: "system";       subtype: string; session_id?: string; cwd?: string; tools?: string[]; model?: string; permissionMode?: string; apiKeySource?: string }
   | { type: "assistant";    message: ClaudeMessage; is_partial?: boolean; session_id?: string }
   | { type: "user";         message: ClaudeMessage; session_id?: string }
   | { type: "result";       subtype: string; session_id?: string; error?: string; result?: string; cost_usd?: number; total_cost_usd?: number; is_error?: boolean; permission_denials?: { tool_name: string; tool_use_id: string; tool_input?: unknown }[]; usage?: ClaudeUsage; duration_ms?: number; model?: string; num_turns?: number }
   | { type: "stream_event"; event: { type: string; usage?: ClaudeUsage; delta?: unknown }; session_id?: string }
-  | { type: "rate_limit_event"; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number }; session_id?: string };
+  | { type: "rate_limit_event"; rate_limit_info?: RawRateLimitInfo; rateLimitInfo?: RawRateLimitInfo; session_id?: string };
