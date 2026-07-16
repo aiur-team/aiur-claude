@@ -91,15 +91,25 @@ export function isNotification(msg: RpcIncoming): msg is RpcNotification {
   return !("id" in msg);
 }
 
-/** Try to parse a single line as a JSON-RPC message. Returns null on error. */
-export function parseLine(line: string): RpcIncoming | null {
+/** A response to a server→client request (id + result/error, no method). */
+export function isResponse(msg: RpcMessage): msg is RpcResponse {
+  return !("method" in msg) && "id" in msg && ("result" in msg || "error" in msg);
+}
+
+/**
+ * Try to parse a single line as a JSON-RPC message. Returns null on error.
+ * Accepts requests, notifications, and responses — responses arrive when the
+ * client answers a server-initiated request (e.g. item/tool/call).
+ */
+export function parseLine(line: string): RpcMessage | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {
     const parsed = JSON.parse(trimmed) as RpcMessage;
-    if (!("method" in parsed)) return null;
     if ("jsonrpc" in parsed && parsed.jsonrpc !== "2.0") return null;
-    return parsed as RpcIncoming;
+    if ("method" in parsed) return parsed;
+    if ("id" in parsed && ("result" in parsed || "error" in parsed)) return parsed;
+    return null;
   } catch {
     return null;
   }

@@ -115,7 +115,7 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `thread/start` | `{ cwd?, permissionMode? }` | `{ thread: { id, created_at } }` |
+| `thread/start` | `{ cwd?, permissionMode?, dynamicTools? }` | `{ thread: { id, created_at } }` |
 | `thread/resume` | `{ threadId }` | `{ thread: { id, turns[], cwd, … } }` |
 | `thread/fork` | `{ threadId }` | `{ thread: { id, forked_from, created_at } }` |
 
@@ -161,6 +161,41 @@ After `turn/start`, the server streams these notifications:
 
 ---
 
+## Dynamic tools
+
+Orchestrators can declare client-side tools on `thread/start`; the server surfaces them to the claude subprocess and round-trips invocations back over the same transport:
+
+```jsonc
+// Client → Server
+{ "jsonrpc": "2.0", "method": "thread/start", "params": {
+    "cwd": "/path/to/project",
+    "permissionMode": "bypassPermissions",
+    "dynamicTools": [
+      { "name": "emit_alert",
+        "description": "Emit a milestone alert.",
+        "inputSchema": { "type": "object", "required": ["name", "message"], "properties": { /* … */ } } }
+    ]
+  }, "id": 2 }
+```
+
+Each spec (`name`, `description`, JSON-schema `inputSchema`) is served to claude through an in-process MCP server: a unix-domain socket hosted by the app server, reached via a tiny stdio relay (`dist/mcp-shim.js`) wired with `--mcp-config`. Claude sees the tool as `mcp__aiur__<name>` and each name is allowlisted via `--allowedTools` so calls run headless under every permission mode.
+
+When claude invokes a tool, the server sends a JSON-RPC **request** to the client and waits for the response (2-minute timeout):
+
+```jsonc
+// Server → Client (request)
+{ "jsonrpc": "2.0", "id": "aiur-tool-1", "method": "item/tool/call",
+  "params": { "name": "emit_alert", "arguments": { /* … */ }, "callId": "…" } }
+
+// Client → Server (response)
+{ "jsonrpc": "2.0", "id": "aiur-tool-1",
+  "result": { "success": true, "output": "…", "contentItems": [{ "type": "inputText", "text": "…" }] } }
+```
+
+`output` (or `contentItems[0].text`) is returned to claude as the MCP tool result; `success: false`, error responses, and timeouts surface to claude as structured tool errors (`isError: true`). Threads started without `dynamicTools` behave exactly as before.
+
+---
+
 ## Permission modes
 
 | Mode | Behaviour |
@@ -194,18 +229,21 @@ symphony-claude
 
 ```
 src/
-  index.ts       CLI entry — parses subcommand / flags, shows QR code
-  protocol.ts    JSON-RPC 2.0 types and helpers
-  types.ts       Domain types: Thread → Turn → Item
-  transport.ts   stdio and WebSocket transports
-  tools.ts       Built-in skills catalog
-  server.ts      ClaudeAppServer — method handlers + claude CLI runner
+  index.ts          CLI entry — parses subcommand / flags, shows QR code
+  protocol.ts       JSON-RPC 2.0 types and helpers
+  types.ts          Domain types: Thread → Turn → Item
+  transport.ts      stdio and WebSocket transports
+  tools.ts          Built-in skills catalog
+  dynamic-tools.ts  MCP bridge for orchestrator-declared tools
+  mcp-shim.ts       stdio↔unix-socket relay spawned by claude
+  server.ts         ClaudeAppServer — method handlers + claude CLI runner
 ```
 
 Each turn spawns:
 ```
 claude --print --output-format stream-json --include-partial-messages
        --permission-mode <mode>
+       --mcp-config <json> --allowedTools <names>   # threads with dynamicTools
        --session-id <id>    # first turn of a thread
        --resume <id>        # subsequent turns
 ```

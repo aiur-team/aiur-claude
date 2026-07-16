@@ -12,7 +12,7 @@ import { URL } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import selfsigned from "selfsigned";
 import { parseLine } from "./protocol.js";
-import type { RpcIncoming } from "./protocol.js";
+import type { RpcMessage } from "./protocol.js";
 import type { ConnectionState } from "./types.js";
 import { ClaudeAppServer } from "./server.js";
 
@@ -25,7 +25,7 @@ function makeConnection(sendFn: (msg: unknown) => void): ConnectionState {
 // ─── Message dispatcher ───────────────────────────────────────────────────────
 
 async function dispatch(
-  raw: RpcIncoming,
+  raw: RpcMessage,
   conn: ConnectionState,
   server: ClaudeAppServer,
 ): Promise<void> {

@@ -12,6 +12,10 @@
  *   Threads:   thread/start  thread/resume  thread/fork
  *   Turns:     turn/start    turn/steer     turn/interrupt
  *   Discovery: model/list    skills/list    app/list
+ *
+ * Orchestrator-declared tools (thread/start `dynamicTools`) are served to the
+ * claude subprocess through an in-process MCP bridge (see dynamic-tools.ts);
+ * invocations round-trip to the client as item/tool/call JSON-RPC requests.
  */
 
 import { execFileSync, spawn } from "child_process";
@@ -34,15 +38,16 @@ const CLAUDE_BIN = resolveClaude();
 
 import {
   ok, rpcErr, notif,
-  isRequest,
+  isRequest, isResponse,
   E, RpcException,
-  type RpcIncoming,
+  type RpcMessage,
   type RpcResponse,
 } from "./protocol.js";
 import type {
-  ConnectionState, Thread, Turn, StoredItem, PermissionMode,
+  ConnectionState, Thread, Turn, StoredItem, PermissionMode, DynamicToolSpec,
 } from "./types.js";
 import { BUILTIN_SKILLS } from "./tools.js";
+import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dynamic-tools.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +100,8 @@ export class ClaudeAppServer {
   private threads = new Map<string, Thread>();
   private claudePath: string;
   private debug: boolean;
+  /** Pending server→client requests (dynamic tool round-trips). */
+  private engineCalls = new PendingEngineCalls();
 
   constructor(claudePath: string, debug = false) {
     this.claudePath = claudePath;
@@ -107,7 +114,14 @@ export class ClaudeAppServer {
 
   // ── Entry point ────────────────────────────────────────────────────────────
 
-  async handleMessage(msg: RpcIncoming, conn: ConnectionState): Promise<RpcResponse | null> {
+  async handleMessage(msg: RpcMessage, conn: ConnectionState): Promise<RpcResponse | null> {
+    if (isResponse(msg)) {
+      // Client answered a server-initiated request (e.g. item/tool/call).
+      if (!this.engineCalls.handleResponse(msg)) {
+        this.log(`unmatched response id: ${String(msg.id)}`);
+      }
+      return null;
+    }
     if (!isRequest(msg)) return null;       // client notifications are ignored
     const { id, method, params } = msg;
     try {
@@ -127,7 +141,7 @@ export class ClaudeAppServer {
   private async dispatch(method: string, params: unknown, conn: ConnectionState): Promise<unknown> {
     switch (method) {
       case "initialize":       return this.initialize(params, conn);
-      case "thread/start":     return this.threadStart(params);
+      case "thread/start":     return this.threadStart(params, conn);
       case "thread/resume":    return this.threadResume(params);
       case "thread/fork":      return this.threadFork(params);
       case "turn/start":       return this.turnStart(params, conn);
@@ -161,21 +175,31 @@ export class ClaudeAppServer {
         turns:    ["start", "steer", "interrupt"],
         models:   AVAILABLE_MODELS.map(m => m.id),
         skills:   BUILTIN_SKILLS.map(s => s.name),
+        dynamicTools: true,
       },
     };
   }
 
   // ── thread/start ───────────────────────────────────────────────────────────
 
-  private threadStart(params: unknown): unknown {
-    const p = (params ?? {}) as { cwd?: string; permission_mode?: PermissionMode; permissionMode?: PermissionMode };
+  private threadStart(params: unknown, conn: ConnectionState): unknown {
+    const p = (params ?? {}) as {
+      cwd?: string;
+      permission_mode?: PermissionMode; permissionMode?: PermissionMode;
+      dynamicTools?: unknown; dynamic_tools?: unknown;
+    };
     let cwd = p.cwd ?? process.cwd();
     // Expand ~ to the user's home directory (Node spawn doesn't do this)
     if (cwd === "~") cwd = os.homedir();
     else if (cwd.startsWith("~/")) cwd = os.homedir() + cwd.slice(1);
     // Accept both snake_case and camelCase for Codex protocol compatibility
     const permMode = p.permissionMode ?? p.permission_mode ?? "default";
+    const dynamicTools = parseDynamicTools(p.dynamicTools ?? p.dynamic_tools);
     const thread = createThread(cwd, permMode);
+    if (dynamicTools.length > 0) {
+      thread.dynamicTools = dynamicTools;
+      thread.toolBridge = this.createBridge(dynamicTools, conn);
+    }
     this.threads.set(thread.id, thread);
     // Return nested format for Codex protocol compatibility
     return { thread: { id: thread.id, created_at: thread.created_at } };
@@ -212,6 +236,10 @@ export class ClaudeAppServer {
     // Create new thread that will fork the source session on its first turn
     const forked = createThread(src.cwd, src.permission_mode);
     forked.forkFrom = { cliSessionId: src.cliSessionId };
+    if (src.dynamicTools && src.dynamicTools.length > 0) {
+      forked.dynamicTools = src.dynamicTools;
+      forked.toolBridge = this.createBridge(src.dynamicTools);
+    }
     this.threads.set(forked.id, forked);
 
     return { thread: { id: forked.id, forked_from: src.id, created_at: forked.created_at } };
@@ -348,6 +376,13 @@ export class ClaudeAppServer {
     conn: ConnectionState,
     model?: string,
   ): Promise<void> {
+    // Serve orchestrator-declared tools to this turn's claude subprocess and
+    // route their invocations back over the connection that started the turn.
+    if (thread.toolBridge) {
+      thread.toolBridge.bindConnection(conn);
+      await thread.toolBridge.start();
+    }
+
     const args = this.buildClaudeArgs(thread, model);
     this.log(`spawn: ${this.claudePath} ${args.join(" ")}`);
     this.log(`cwd: ${thread.cwd}`);
@@ -466,6 +501,13 @@ export class ClaudeAppServer {
     ];
 
     if (model) args.push("--model", model);
+
+    // Expose dynamic tools via the in-process MCP bridge. Allowlist each
+    // mcp__aiur__<name> so calls run headless under every permission mode.
+    if (thread.toolBridge?.socketPath) {
+      args.push("--mcp-config", thread.toolBridge.mcpConfig());
+      args.push("--allowedTools", thread.toolBridge.allowedTools());
+    }
 
     if (thread.forkFrom && !thread.cliSessionId) {
       // First turn of a forked thread: resume source and fork
@@ -647,6 +689,14 @@ export class ClaudeAppServer {
     const t = this.threads.get(id);
     if (!t) throw new RpcException(E.ThreadNotFound, `Thread not found: ${id}`);
     return t;
+  }
+
+  private createBridge(tools: DynamicToolSpec[], conn?: ConnectionState): DynamicToolBridge {
+    const bridge = new DynamicToolBridge(tools, this.engineCalls, {
+      log: (msg) => this.log(msg),
+    });
+    if (conn) bridge.bindConnection(conn);
+    return bridge;
   }
 }
 
