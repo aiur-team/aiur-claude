@@ -7,6 +7,7 @@
  */
 
 import type { ChildProcess } from "child_process";
+import type { DynamicToolBridge } from "./dynamic-tools.js";
 
 // ─── Permissions ─────────────────────────────────────────────────────────────
 
@@ -123,6 +124,25 @@ export interface Thread {
    * Used to pass --resume <id> --fork-session on the first turn.
    */
   forkFrom?: { cliSessionId: string };
+
+  /**
+   * Tools declared by the orchestrator on thread/start (`dynamicTools`).
+   * Surfaced to the spawned claude CLI through the MCP bridge; invocations
+   * round-trip to the orchestrator as item/tool/call requests.
+   */
+  dynamicTools?: DynamicToolSpec[];
+
+  /** In-process MCP server exposing dynamicTools to the claude subprocess. */
+  toolBridge?: DynamicToolBridge;
+}
+
+// ─── Dynamic tools ────────────────────────────────────────────────────────────
+
+/** One orchestrator-declared tool: name, description, JSON-schema input. */
+export interface DynamicToolSpec {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
 }
 
 // ─── Connection State ─────────────────────────────────────────────────────────
