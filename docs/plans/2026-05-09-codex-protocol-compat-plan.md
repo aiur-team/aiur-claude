@@ -8,12 +8,12 @@ created: 2026-05-09
 
 ## Problem
 
-`symphony-claude` is the Claude CLI adapter used by Symphony's Claude backend. It should remain a thin Codex app-server compatibility shim so Symphony can switch between the official Codex app-server and Claude without forking large protocol logic.
+`aiur-claude` is the Claude CLI adapter used by Aiur's Claude backend. It should remain a thin Codex app-server compatibility shim so Aiur can switch between the official Codex app-server and Claude without forking large protocol logic.
 
 Current drift points:
 
 - OpenAI's current app-server docs show JSON-RPC-shaped messages with the `jsonrpc` header omitted on the wire.
-- Symphony sends `clientInfo` during `initialize`, while `symphony-claude` records only `client`.
+- Aiur sends `clientInfo` during `initialize`, while `aiur-claude` records only `client`.
 - The local smoke test expects older top-level `thread_id` and `turns` shapes.
 - `.claude/settings.local.json` is tracked even though it is local tool configuration.
 - Package repository metadata no longer matches the active fork.
@@ -32,7 +32,7 @@ In scope:
 Out of scope:
 
 - Implementing additional Codex app-server methods.
-- Changing Symphony's Elixir Claude backend.
+- Changing Aiur's Elixir Claude backend.
 - Reworking WebSocket pairing or TLS behavior.
 
 ## Implementation Units
