@@ -34,7 +34,7 @@
     "start:ws": "node dist/index.js --transport ws --port 3284",
     "dev": "pnpm exec ts-node src/index.ts",
     "dev:ws": "pnpm exec ts-node src/index.ts --transport ws --port 3284",
-    "test": "npm run build && node --test test/",
+    "test": "npm run build && node --test test/*.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
