@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000002","cwd":"/tmp","model":"claude-opus-4-6","permissionMode":"default","apiKeySource":"ANTHROPIC_API_KEY"}
+{"type":"rate_limit_event","rateLimitInfo":{"status":"rejected","used_percent":100,"resets_at":1767312000},"session_id":"00000000-0000-4000-8000-000000000002"}
+{"type":"assistant","message":{"id":"msg_00000000000000000000000002","content":[{"type":"text","text":"Done."}]},"session_id":"00000000-0000-4000-8000-000000000002"}
+{"type":"result","subtype":"success","session_id":"00000000-0000-4000-8000-000000000002","cost_usd":1e-7,"usage":{"input_tokens":5,"output_tokens":7},"num_turns":1,"duration_ms":900}

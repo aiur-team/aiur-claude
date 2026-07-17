@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","cwd":"/tmp","model":"claude-sonnet-4-6","permissionMode":"default","apiKeySource":"none"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","utilization":0.83,"resetsAt":1767225600},"session_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"assistant","message":{"id":"msg_00000000000000000000000001","content":[{"type":"text","text":"Done."}]},"session_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"result","subtype":"success","session_id":"00000000-0000-4000-8000-000000000001","total_cost_usd":0.100000000000000005,"usage":{"input_tokens":12,"output_tokens":34},"num_turns":1,"duration_ms":1200}
