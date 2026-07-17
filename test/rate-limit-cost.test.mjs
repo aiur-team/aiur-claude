@@ -130,6 +130,51 @@ test("identifying fields never pass through rate_limit/update", () => {
   }
 });
 
+test("unrecognized status text and invalid numeric facts cannot cross the allowlist", () => {
+  const server = new ClaudeAppServer("claude", false);
+  const thread = { id: "thread-1", accountType: "subscription" };
+  const turn = { id: "turn-1" };
+  const conn = fakeConn();
+
+  const hostile = {
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "user@example.com sk-ant-SECRET",
+      utilization: 101,
+      resetsAt: -1,
+    },
+  };
+  server.processClaudeEvent(hostile, thread, turn, conn, new Map(), new Map(), JSON.stringify(hostile));
+
+  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  assert.deepEqual(update.params.rate_limit, {
+    status: "unknown",
+    account_type: "subscription",
+    source_version: "unknown",
+  });
+  assert.ok(!JSON.stringify(update).includes("SECRET"));
+  assert.ok(!JSON.stringify(update).includes("example.com"));
+});
+
+test("a later init without an auth fact clears stale account classification", () => {
+  const server = new ClaudeAppServer("claude", false);
+  const thread = { id: "thread-1" };
+  const turn = { id: "turn-1" };
+  const conn = fakeConn();
+
+  server.processClaudeEvent(
+    { type: "system", subtype: "init", apiKeySource: "ANTHROPIC_API_KEY" },
+    thread, turn, conn, new Map(), new Map(),
+  );
+  assert.equal(thread.accountType, "api_key");
+
+  server.processClaudeEvent(
+    { type: "system", subtype: "init" },
+    thread, turn, conn, new Map(), new Map(),
+  );
+  assert.equal(thread.accountType, "unknown");
+});
+
 test("rate_limit_event with no payload still forwards a normalized envelope", () => {
   const server = new ClaudeAppServer("claude", false);
   const thread = { id: "thread-1" };
@@ -193,6 +238,8 @@ test("used_percent normalization is explicit about used-vs-remaining scale", () 
   assert.equal(normalizeUsedPercent(1), 100);           // fully used
   assert.equal(normalizeUsedPercent(0), 0);
   assert.equal(normalizeUsedPercent(-5), undefined);
+  assert.equal(normalizeUsedPercent(101), undefined);
+  assert.equal(normalizeUsedPercent(Number.POSITIVE_INFINITY), undefined);
   assert.equal(normalizeUsedPercent("95"), undefined);
 });
 

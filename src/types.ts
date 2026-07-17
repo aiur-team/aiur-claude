@@ -160,8 +160,8 @@ export type AccountType = "subscription" | "api_key" | "unknown";
  * copied from the CLI event.
  */
 export interface RateLimitStatus {
-  /** CLI-reported standing, e.g. "allowed", "allowed_warning", "rejected". */
-  status: string;
+  /** Bounded CLI-reported standing; unrecognized values become `unknown`. */
+  status: "allowed" | "allowed_warning" | "rejected" | "unknown";
   /**
    * Percentage of the quota USED, on a 0–100 scale. Higher = closer to the
    * limit; 95 means nearly exhausted. This is consumption, NOT remaining

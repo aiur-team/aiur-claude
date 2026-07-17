@@ -110,9 +110,15 @@ export function accountTypeFromApiKeySource(source: string | undefined): Account
  * Values in [0, 1] are read as a used fraction and scaled by 100.
  */
 export function normalizeUsedPercent(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return undefined;
   return value <= 1 ? value * 100 : value;
 }
+
+const RATE_LIMIT_STATUSES = new Set<RateLimitStatus["status"]>([
+  "allowed",
+  "allowed_warning",
+  "rejected",
+]);
 
 /**
  * Build the sanitized rate-limit event forwarded to the engine.
@@ -130,12 +136,14 @@ export function sanitizeRateLimit(
   const usedPercent = normalizeUsedPercent(raw.utilization ?? raw.used_percent ?? raw.usedPercent);
   const resetsAt = raw.resetsAt ?? raw.resets_at;
   const out: RateLimitStatus = {
-    status: typeof raw.status === "string" ? raw.status : "unknown",
+    status: RATE_LIMIT_STATUSES.has(raw.status as RateLimitStatus["status"])
+      ? raw.status as RateLimitStatus["status"]
+      : "unknown",
     account_type: accountType,
     source_version: sourceVersion,
   };
   if (usedPercent !== undefined) out.used_percent = usedPercent;
-  if (typeof resetsAt === "number" && Number.isFinite(resetsAt)) out.resets_at = resetsAt;
+  if (typeof resetsAt === "number" && Number.isFinite(resetsAt) && resetsAt >= 0) out.resets_at = resetsAt;
   return out;
 }
 
@@ -643,9 +651,7 @@ export class ClaudeAppServer {
       case "system": {
         if (event.subtype === "init") {
           if (event.session_id) thread.cliSessionId = event.session_id;
-          if (event.apiKeySource !== undefined) {
-            thread.accountType = accountTypeFromApiKeySource(event.apiKeySource);
-          }
+          thread.accountType = accountTypeFromApiKeySource(event.apiKeySource);
         }
         break;
       }
