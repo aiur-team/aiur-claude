@@ -17,11 +17,16 @@ import { fakeConn, waitFor } from "./helpers.mjs";
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const FAKE_CLAUDE = path.join(FIXTURES, "fake-claude.mjs");
 const FAKE_VERSION = "9.9.9-test (fake-claude)";
+// The server enriches rate limits from /api/oauth/usage. Tests must never reach
+// the network, and these cases assert the CLI-derived values specifically, so
+// the fetcher is stubbed to "no reading available".
+const noUtilization = async () => undefined;
+
 
 /** Run a full turn against the fake claude CLI replaying the given fixture. */
 async function runFixtureTurn(fixture) {
   process.env.FAKE_CLAUDE_FIXTURE = path.join(FIXTURES, fixture);
-  const server = new ClaudeAppServer(FAKE_CLAUDE, false);
+  const server = new ClaudeAppServer(FAKE_CLAUDE, false, noUtilization);
   const conn = fakeConn();
   await server.handleMessage(
     {
@@ -49,7 +54,7 @@ test("subscription rate-limit emission round-trips sanitized and typed", async (
   const { conn, threadId, completed } = await runFixtureTurn("rate-limit-subscription.ndjson");
 
   const started = conn.sent.find((m) => m.method === "turn/started");
-  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  const update = await waitFor(() => conn.sent.find((m) => m.method === "rate_limit/update"));
   assert.ok(update, "rate_limit/update must be forwarded");
   assert.deepEqual(update.params, {
     turn_id: started.params.turn_id,
@@ -72,7 +77,7 @@ test("subscription rate-limit emission round-trips sanitized and typed", async (
 test("api-key rate-limit emission normalizes the alternate CLI shape", async () => {
   const { conn, completed } = await runFixtureTurn("rate-limit-api-key.ndjson");
 
-  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  const update = await waitFor(() => conn.sent.find((m) => m.method === "rate_limit/update"));
   assert.ok(update, "rate_limit/update must be forwarded");
   assert.deepEqual(update.params.rate_limit, {
     status: "rejected",
@@ -89,8 +94,8 @@ test("api-key rate-limit emission normalizes the alternate CLI shape", async () 
 
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
-test("identifying fields never pass through rate_limit/update", () => {
-  const server = new ClaudeAppServer("claude", false);
+test("identifying fields never pass through rate_limit/update", async () => {
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   server.sourceVersion = FAKE_VERSION;
   const thread = { id: "thread-1", accountType: "subscription" };
   const turn = { id: "turn-1" };
@@ -112,7 +117,7 @@ test("identifying fields never pass through rate_limit/update", () => {
   };
   server.processClaudeEvent(hostile, thread, turn, conn, new Map(), new Map(), JSON.stringify(hostile));
 
-  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  const update = await waitFor(() => conn.sent.find((m) => m.method === "rate_limit/update"));
   assert.ok(update);
   assert.deepEqual(update.params.rate_limit, {
     status: "allowed",
@@ -130,8 +135,8 @@ test("identifying fields never pass through rate_limit/update", () => {
   }
 });
 
-test("unrecognized status text and invalid numeric facts cannot cross the allowlist", () => {
-  const server = new ClaudeAppServer("claude", false);
+test("unrecognized status text and invalid numeric facts cannot cross the allowlist", async () => {
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   const thread = { id: "thread-1", accountType: "subscription" };
   const turn = { id: "turn-1" };
   const conn = fakeConn();
@@ -146,7 +151,7 @@ test("unrecognized status text and invalid numeric facts cannot cross the allowl
   };
   server.processClaudeEvent(hostile, thread, turn, conn, new Map(), new Map(), JSON.stringify(hostile));
 
-  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  const update = await waitFor(() => conn.sent.find((m) => m.method === "rate_limit/update"));
   assert.deepEqual(update.params.rate_limit, {
     status: "unknown",
     account_type: "subscription",
@@ -157,7 +162,7 @@ test("unrecognized status text and invalid numeric facts cannot cross the allowl
 });
 
 test("a later init without an auth fact clears stale account classification", () => {
-  const server = new ClaudeAppServer("claude", false);
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   const thread = { id: "thread-1" };
   const turn = { id: "turn-1" };
   const conn = fakeConn();
@@ -175,8 +180,8 @@ test("a later init without an auth fact clears stale account classification", ()
   assert.equal(thread.accountType, "unknown");
 });
 
-test("rate_limit_event with no payload still forwards a normalized envelope", () => {
-  const server = new ClaudeAppServer("claude", false);
+test("rate_limit_event with no payload still forwards a normalized envelope", async () => {
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   const thread = { id: "thread-1" };
   const turn = { id: "turn-1" };
   const conn = fakeConn();
@@ -184,7 +189,7 @@ test("rate_limit_event with no payload still forwards a normalized envelope", ()
   const event = { type: "rate_limit_event" };
   server.processClaudeEvent(event, thread, turn, conn, new Map(), new Map(), JSON.stringify(event));
 
-  const update = conn.sent.find((m) => m.method === "rate_limit/update");
+  const update = await waitFor(() => conn.sent.find((m) => m.method === "rate_limit/update"));
   assert.deepEqual(update.params.rate_limit, {
     status: "unknown",
     account_type: "unknown",
@@ -195,7 +200,7 @@ test("rate_limit_event with no payload still forwards a normalized envelope", ()
 // ─── Exact decimal preservation ───────────────────────────────────────────────
 
 test("awkward decimals preserve exact strings while floats keep working", () => {
-  const server = new ClaudeAppServer("claude", false);
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   const cases = [
     ['{"type":"result","subtype":"success","total_cost_usd":0.100000000000000005}', "0.100000000000000005", 0.1],
     ['{"type":"result","subtype":"success","cost_usd":1e-7}', "1e-7", 1e-7],
@@ -212,7 +217,7 @@ test("awkward decimals preserve exact strings while floats keep working", () => 
 });
 
 test("cost key inside a string value is never mistaken for the cost", () => {
-  const server = new ClaudeAppServer("claude", false);
+  const server = new ClaudeAppServer("claude", false, noUtilization);
   const rawLine =
     '{"type":"result","subtype":"success","result":"note: \\"total_cost_usd\\": 9.9 appears in prose","total_cost_usd":0.25}';
   const turn = { id: "turn-1" };
