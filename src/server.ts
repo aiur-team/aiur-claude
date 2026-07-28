@@ -22,6 +22,7 @@ import { execFile, execFileSync, spawn } from "child_process";
 import * as os from "os";
 import * as readline from "readline";
 import { v4 as uuid } from "uuid";
+import { fetchUtilization, type Utilization } from "./utilization.js";
 
 // Resolve the full path to the claude binary once at startup so that spawn()
 // can find it even when ~/.local/bin is not in the inherited PATH.
@@ -131,10 +132,15 @@ export function sanitizeRateLimit(
   info: RawRateLimitInfo | undefined,
   accountType: AccountType,
   sourceVersion: string,
+  utilization?: Utilization,
 ): RateLimitStatus {
   const raw = info ?? {};
-  const usedPercent = normalizeUsedPercent(raw.utilization ?? raw.used_percent ?? raw.usedPercent);
-  const resetsAt = raw.resetsAt ?? raw.resets_at;
+  // The CLI event carries no consumed fraction, so `utilization` — read from
+  // the same `/api/oauth/usage` endpoint the TUI's `/usage` uses — supplies it.
+  // A CLI-provided value still wins if one ever starts appearing.
+  const usedPercent =
+    normalizeUsedPercent(raw.utilization ?? raw.used_percent ?? raw.usedPercent) ?? utilization?.used_percent;
+  const resetsAt = raw.resetsAt ?? raw.resets_at ?? utilization?.resets_at;
   const out: RateLimitStatus = {
     status: RATE_LIMIT_STATUSES.has(raw.status as RateLimitStatus["status"])
       ? raw.status as RateLimitStatus["status"]
@@ -196,9 +202,20 @@ export class ClaudeAppServer {
   /** claude CLI version (from `claude --version`), resolved once per server. */
   private sourceVersion?: string;
 
-  constructor(claudePath: string, debug = false) {
+  /**
+   * Reads current quota utilization. Injectable so tests never reach the
+   * network: the default performs a real `/api/oauth/usage` request.
+   */
+  private readonly utilizationFetcher: () => Promise<Utilization | undefined>;
+
+  constructor(
+    claudePath: string,
+    debug = false,
+    utilizationFetcher: () => Promise<Utilization | undefined> = fetchUtilization,
+  ) {
     this.claudePath = claudePath;
     this.debug = debug;
+    this.utilizationFetcher = utilizationFetcher;
   }
 
   private log(...args: unknown[]): void {
@@ -306,8 +323,60 @@ export class ClaudeAppServer {
       thread.toolBridge = this.createBridge(dynamicTools, conn);
     }
     this.threads.set(thread.id, thread);
+    // Report standing as soon as the thread exists. The CLI only emits
+    // `rate_limit_event` partway through a turn, which left a caller unable to
+    // learn where the account stands without first spending quota — exactly
+    // backwards for something used to decide whether to spend it. The usage
+    // endpoint needs no turn, so answer immediately and let the in-turn event
+    // refresh it later.
+    void this.emitUtilizationSnapshot(thread, conn);
     // Return nested format for Codex protocol compatibility
     return { thread: { id: thread.id, created_at: thread.created_at } };
+  }
+
+  /**
+   * Fetch utilization and publish it as a `rate_limit/update`, with no turn.
+   *
+   * Failure is silent by design: no credentials, an expired token, an offline
+   * machine, or an API-key account all land here, and none of them should
+   * disturb a thread that is otherwise fine.
+   */
+  /** Forward an in-turn rate-limit event, enriched with current utilization. */
+  private async emitRateLimitUpdate(
+    info: RawRateLimitInfo | undefined,
+    thread: Thread,
+    turn: Turn,
+    conn: ConnectionState,
+  ): Promise<void> {
+    try {
+      const utilization = await this.utilizationFetcher();
+      conn.send(notif("rate_limit/update", {
+        turn_id:    turn.id,
+        thread_id:  thread.id,
+        rate_limit: sanitizeRateLimit(info, thread.accountType ?? "unknown", this.sourceVersion ?? "unknown", utilization),
+      }));
+    } catch {
+      // A quota reading must never break a turn.
+    }
+  }
+
+  private async emitUtilizationSnapshot(thread: Thread, conn: ConnectionState): Promise<void> {
+    try {
+      const utilization = await this.utilizationFetcher();
+      if (!utilization) return;
+
+      conn.send(notif("rate_limit/update", {
+        thread_id: thread.id,
+        rate_limit: sanitizeRateLimit(
+          { status: "allowed" },
+          thread.accountType ?? "unknown",
+          await this.resolveSourceVersion(),
+          utilization,
+        ),
+      }));
+    } catch {
+      // Never let a quota reading break a thread.
+    }
   }
 
   // ── thread/resume ──────────────────────────────────────────────────────────
@@ -768,12 +837,11 @@ export class ClaudeAppServer {
 
       // ── rate_limit_event (sanitized + forwarded) ─────────────────────────
       case "rate_limit_event": {
-        const info = event.rate_limit_info ?? event.rateLimitInfo;
-        conn.send(notif("rate_limit/update", {
-          turn_id:    turn.id,
-          thread_id:  thread.id,
-          rate_limit: sanitizeRateLimit(info, thread.accountType ?? "unknown", this.sourceVersion ?? "unknown"),
-        }));
+        // The event supplies the standing; the usage endpoint supplies the
+        // consumed fraction the event has never carried. Fetching is async and
+        // this handler is not, so the send is deferred rather than blocking
+        // stream processing behind a network call.
+        void this.emitRateLimitUpdate(event.rate_limit_info ?? event.rateLimitInfo, thread, turn, conn);
         break;
       }
 
