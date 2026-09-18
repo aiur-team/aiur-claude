@@ -156,7 +156,7 @@ After `turn/start`, the server streams these notifications:
 | `usage/update` | Token usage update — `{ turn_id, usage: { input_tokens, output_tokens, total_tokens } }` |
 | `rate_limit/update` | Sanitized rate-limit standing — `{ turn_id, thread_id, rate_limit: { status, used_percent?, resets_at?, account_type, source_version } }`. `used_percent` is percent of quota **used** (0–100), not remaining. Identifying data (org/account ids, emails, tokens, session ids, headers) is never forwarded. |
 | `turn/completed` | Turn finished — `{ turn_id, status, items_count, usage?, cost_usd?, cost_usd_raw?, cost_source_version? }`. `cost_usd_raw` is the exact decimal as serialized by the CLI, captured before float conversion; `cost_usd` stays float for backward compatibility. |
-| `turn/failed` | Turn failed — `{ turn_id, error }` |
+| `turn/failed` | Turn failed — `{ turn_id, error, provider_error? }`. `provider_error` (`{ error, api_error_status?, message? }`) is present only when the claude CLI itself reported an API error (e.g. `rate_limit` / 429 for the session-limit banner); text items it synthesized carry `provider_error: <class>` too. |
 | `turn/permission_denied` | Permission denied — `{ turn_id, denials }` |
 
 ---

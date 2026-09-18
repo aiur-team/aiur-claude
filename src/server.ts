@@ -53,6 +53,21 @@ import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dyna
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * The CLI's error class for an assistant event it synthesized from an API
+ * error, or undefined for text the model wrote.
+ */
+function providerErrorClass(event: { error?: unknown; is_api_error_message?: unknown }): string | undefined {
+  if (typeof event.error === "string" && event.error !== "") return event.error;
+  if (event.is_api_error_message === true) return "unknown";
+  return undefined;
+}
+
+/** Provider messages are one-line banners; cap them so a runaway body can't bloat the wire. */
+function boundedMessage(text: string): string {
+  return text.slice(0, 500);
+}
+
 /** Flatten a StoredItem for notification: merge {id, created_at} with item contents. */
 function flatItem(si: StoredItem): Record<string, unknown> {
   return { id: si.id, created_at: si.created_at, ...si.item };
@@ -464,7 +479,13 @@ export class ClaudeAppServer {
         turn.error = String(err);
         turn.completed_at = Date.now();
         thread.active_turn_id = undefined;
-        conn.send(notif("turn/failed", { turn_id: turn.id, error: String(err) }));
+        conn.send(notif("turn/failed", {
+          turn_id: turn.id,
+          error: String(err),
+          // Provenance: only the CLI's own API-error events set this, never
+          // assistant prose that happens to repeat a refusal.
+          ...(turn.provider_error ? { provider_error: turn.provider_error } : {}),
+        }));
       });
     });
 
@@ -730,6 +751,9 @@ export class ClaudeAppServer {
         const msg    = event.message;
         const msgId  = msg.id ?? "unknown";
         const partial = !!event.is_partial;
+        // The CLI marks text it synthesized from an API error (session limit,
+        // unknown model, ...) with `is_api_error_message` and an `error` class.
+        const apiError = providerErrorClass(event);
 
         for (const block of (msg.content ?? [])) {
 
@@ -750,11 +774,20 @@ export class ClaudeAppServer {
               // Final version: persist as a complete item
               const item: StoredItem = {
                 id: uuid(), created_at: Date.now(),
-                item: { type: "text", text: block.text },
+                item: apiError
+                  ? { type: "text", text: block.text, provider_error: apiError }
+                  : { type: "text", text: block.text },
               };
               turn.items.push(item);
               conn.send(notif("item/created", { turn_id: turn.id, item: flatItem(item) }));
               partialText.delete(msgId);
+              if (apiError) {
+                turn.provider_error = {
+                  ...turn.provider_error,
+                  error: apiError,
+                  message: boundedMessage(block.text),
+                };
+              }
             }
 
           } else if (block.type === "thinking" && !partial) {
@@ -855,6 +888,22 @@ export class ClaudeAppServer {
           turn.error  = event.error ?? "unknown error";
         }
 
+        // An API-error result (is_error with an HTTP status, or the CLI's
+        // "api_error" terminal reason) confirms the refusal and carries its
+        // status. Other is_error results (max turns, execution errors) are not
+        // provider refusals and stay untagged.
+        if (event.is_error === true &&
+            (typeof event.api_error_status === "number" || event.terminal_reason === "api_error" || turn.provider_error)) {
+          const status  = typeof event.api_error_status === "number" ? event.api_error_status : undefined;
+          const message = turn.provider_error?.message ??
+            (typeof event.result === "string" ? boundedMessage(event.result) : undefined);
+          turn.provider_error = {
+            error: turn.provider_error?.error ?? (status === 429 ? "rate_limit" : "unknown"),
+            ...(status  !== undefined ? { api_error_status: status } : {}),
+            ...(message !== undefined ? { message } : {}),
+          };
+        }
+
         // Capture token usage and cost (if result arrives before process is killed)
         if (event.usage)  turn.usage    = event.usage;
         const costKey =
@@ -937,8 +986,8 @@ export interface RawRateLimitInfo {
 
 type ClaudeStreamEvent =
   | { type: "system";       subtype: string; session_id?: string; cwd?: string; tools?: string[]; model?: string; permissionMode?: string; apiKeySource?: string }
-  | { type: "assistant";    message: ClaudeMessage; is_partial?: boolean; session_id?: string }
+  | { type: "assistant";    message: ClaudeMessage; is_partial?: boolean; session_id?: string; error?: string; is_api_error_message?: boolean }
   | { type: "user";         message: ClaudeMessage; session_id?: string }
-  | { type: "result";       subtype: string; session_id?: string; error?: string; result?: string; cost_usd?: number; total_cost_usd?: number; is_error?: boolean; permission_denials?: { tool_name: string; tool_use_id: string; tool_input?: unknown }[]; usage?: ClaudeUsage; duration_ms?: number; model?: string; num_turns?: number }
+  | { type: "result";       subtype: string; session_id?: string; error?: string; result?: string; cost_usd?: number; total_cost_usd?: number; is_error?: boolean; api_error_status?: number | null; terminal_reason?: string; permission_denials?: { tool_name: string; tool_use_id: string; tool_input?: unknown }[]; usage?: ClaudeUsage; duration_ms?: number; model?: string; num_turns?: number }
   | { type: "stream_event"; event: { type: string; usage?: ClaudeUsage; delta?: unknown }; session_id?: string }
   | { type: "rate_limit_event"; rate_limit_info?: RawRateLimitInfo; rateLimitInfo?: RawRateLimitInfo; session_id?: string };
