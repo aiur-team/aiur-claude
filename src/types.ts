@@ -20,7 +20,16 @@ export type PermissionMode =
 
 // ─── Items ───────────────────────────────────────────────────────────────────
 
-export interface TextItem     { type: "text";           text: string }
+export interface TextItem {
+  type: "text";
+  text: string;
+  /**
+   * Set when the claude CLI synthesized this text from an API error (the
+   * stream event carried `is_api_error_message` / `error`), e.g. the session
+   * limit banner. Absent on text the model actually wrote.
+   */
+  provider_error?: string;
+}
 export interface ThinkingItem { type: "thinking";       thinking: string }
 
 export interface ToolCallItem {
@@ -106,6 +115,24 @@ export interface Turn {
    * raw NDJSON text before JSON.parse converts it to a float.
    */
   cost_usd_raw?: string;
+  /**
+   * Provider refusal reported by the claude CLI itself during this turn.
+   * Forwarded on turn/failed so the engine never has to guess from text.
+   */
+  provider_error?: ProviderError;
+}
+
+/**
+ * An API error the claude CLI reported in its own stream-json, as opposed to
+ * text the model wrote. `error` is the CLI's error class (e.g. "rate_limit",
+ * "model_not_found"); `api_error_status` is the HTTP status from the result
+ * event; `message` is the CLI's user-facing text (e.g. "You've hit your
+ * session limit · resets 12:20am (America/Los_Angeles)").
+ */
+export interface ProviderError {
+  error: string;
+  api_error_status?: number;
+  message?: string;
 }
 
 // ─── Thread ───────────────────────────────────────────────────────────────────
