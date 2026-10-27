@@ -194,6 +194,12 @@ Reply using the request's JSON-RPC `id` and this result shape:
 {"answers":{"<question-id>":{"answers":["red","blue"]}}}
 ```
 
+A multi-call question that actually finishes without a terminal deferral is sent
+with `holdable: false`. The client must record it and reply immediately with the
+Command release text. The adapter sends that text into a continuation of the
+same CLI session; later human answers arrive through ordinary messages. A real
+terminal deferral remains holdable even when several tools were called.
+
 Answers resume the same CLI session and app-server turn with empty stdin. The
 hook receives answers keyed by question **text**, with multiple choices joined
 by `, `. Usage and costs include every subprocess in the turn. A single answer
