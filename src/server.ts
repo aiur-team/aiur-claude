@@ -51,6 +51,7 @@ import type {
   ConnectionState, Thread, Turn, StoredItem, PermissionMode, DynamicToolSpec,
   AccountType, RateLimitStatus,
 } from "./types.js";
+import { parseSteerContent } from "./steer.js";
 import { BUILTIN_SKILLS } from "./tools.js";
 import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dynamic-tools.js";
 
@@ -185,7 +186,7 @@ const AVAILABLE_MODELS = [
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function createThread(cwd: string, permMode: PermissionMode): Thread {
-  return { id: uuid(), created_at: Date.now(), turns: [], cwd, permission_mode: permMode };
+  return { id: uuid(), created_at: Date.now(), turns: [], pending_steer: [], cwd, permission_mode: permMode };
 }
 
 function createTurn(threadId: string, userContent: string): Turn {
@@ -194,7 +195,6 @@ function createTurn(threadId: string, userContent: string): Turn {
     thread_id: threadId,
     status: "active",
     user_content: userContent,
-    steer_queue: [],
     items: [],
     abortController: new AbortController(),
     created_at: Date.now(),
@@ -473,10 +473,10 @@ export class ClaudeAppServer {
 
     const turn = createTurn(thread.id, userContent);
 
-    // Prepend any queued steer content from the last completed turn
-    if (turn.steer_queue.length > 0) {
-      turn.user_content = turn.steer_queue.join("\n\n") + "\n\n" + turn.user_content;
-      turn.steer_queue = [];
+    // Accepted steer text survives completion, interruption, and failure.
+    if (thread.pending_steer.length > 0) {
+      turn.user_content = thread.pending_steer.join("\n\n") + "\n\n" + turn.user_content;
+      thread.pending_steer = [];
     }
 
     thread.turns.push(turn);
@@ -506,14 +506,12 @@ export class ClaudeAppServer {
   // ── turn/steer ─────────────────────────────────────────────────────────────
 
   private turnSteer(params: unknown): unknown {
-    const p = params as { thread_id?: string; threadId?: string; content: string };
+    const p = params as { thread_id?: string; threadId?: string; content?: unknown; input?: unknown };
     const thread = this.getThread(p.threadId ?? p.thread_id ?? "");
 
-    // Queue for the next turn (active turn's queue, or thread-level queue)
     if (thread.active_turn_id) {
-      const turn = thread.turns.find(t => t.id === thread.active_turn_id)!;
-      turn.steer_queue.push(p.content);
-      return { turn_id: turn.id, note: "queued: will be prepended to the next user message" };
+      thread.pending_steer.push(parseSteerContent(p));
+      return { turn_id: thread.active_turn_id, note: "queued: will be prepended to the next user message" };
     }
 
     throw new RpcException(E.NoActiveTurn, "No active turn to steer.");

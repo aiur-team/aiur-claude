@@ -87,9 +87,6 @@ export interface Turn {
   /** Content the user sent to start this turn. */
   user_content: string;
 
-  /** Extra content queued via turn/steer (injected into next claude call). */
-  steer_queue: string[];
-
   /** All items produced during this turn. */
   items: StoredItem[];
 
@@ -145,6 +142,9 @@ export interface Thread {
   cwd: string;
   permission_mode: PermissionMode;
   active_turn_id?: string;
+
+  /** Accepted steer text, consumed once by the next turn/start on this thread. */
+  pending_steer: string[];
 
   /**
    * The actual claude CLI session ID captured from the "system/init" event.
