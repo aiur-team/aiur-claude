@@ -34,4 +34,3 @@ export function buildClaudeArgs(thread: Thread, model?: string): string[] {
 
   return args;
 }
-
