@@ -106,7 +106,7 @@ test('release text reaches resumed tool and completes the original turn', async 
   await call('turn/start',{threadId,content:'ask'});
   const req=await waitFor(()=>request(conn));
   const text='Your question is recorded as Command dec_123. Stop and end your turn.';
-  await server.handleMessage({jsonrpc:'2.0',id:req.id,result:{answers:{[req.params.questions[0].id]:{answers:[text]}}}},conn);
+  await server.handleMessage({jsonrpc:'2.0',id:req.id,result:{answers:{release:{answers:[text]}}}},conn);
   await waitFor(()=>completed(conn));
   assert.equal(calls(log)[1].decision.updatedInput.answers[tool.input.questions[0].question],text);
   assert.equal(completed(conn).params.status,'completed');
