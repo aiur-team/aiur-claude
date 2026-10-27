@@ -22,6 +22,9 @@ import { execFile, execFileSync, spawn } from "child_process";
 import * as os from "os";
 import * as readline from "readline";
 import { v4 as uuid } from "uuid";
+import { addNativeUsage } from "./native-usage.js";
+import { buildClaudeArgs } from "./claude-args.js";
+import { NativeQuestions, NativeQuestionRequests, deferredQuestion } from "./native-questions.js";
 import { fetchUtilization, type Utilization } from "./utilization.js";
 
 // Resolve the full path to the claude binary once at startup so that spawn()
@@ -171,7 +174,7 @@ export function sanitizeRateLimit(
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SERVER_NAME    = "aiur-claude";
-const SERVER_VERSION = "1.1.0";
+const SERVER_VERSION = "1.3.0";
 
 const AVAILABLE_MODELS = [
   { id: "claude-opus-4-6",   name: "Claude Opus 4.6",   aliases: ["opus"] },
@@ -254,7 +257,7 @@ export class ClaudeAppServer {
   async handleMessage(msg: RpcMessage, conn: ConnectionState): Promise<RpcResponse | null> {
     if (isResponse(msg)) {
       // Client answered a server-initiated request (e.g. item/tool/call).
-      if (!this.engineCalls.handleResponse(msg)) {
+      if (!this.nativeRequests.handleResponse(msg, conn) && !this.engineCalls.handleResponse(msg)) {
         this.log(`unmatched response id: ${String(msg.id)}`);
       }
       return null;
@@ -319,11 +322,13 @@ export class ClaudeAppServer {
 
   // ── thread/start ───────────────────────────────────────────────────────────
 
+  private nativeRequests = new NativeQuestionRequests();
+
   private threadStart(params: unknown, conn: ConnectionState): unknown {
     const p = (params ?? {}) as {
       cwd?: string;
       permission_mode?: PermissionMode; permissionMode?: PermissionMode;
-      dynamicTools?: unknown; dynamic_tools?: unknown;
+      dynamicTools?: unknown; dynamic_tools?: unknown; nativeQuestions?: unknown;
     };
     let cwd = p.cwd ?? process.cwd();
     // Expand ~ to the user's home directory (Node spawn doesn't do this)
@@ -332,7 +337,11 @@ export class ClaudeAppServer {
     // Accept both snake_case and camelCase for Codex protocol compatibility
     const permMode = p.permissionMode ?? p.permission_mode ?? "default";
     const dynamicTools = parseDynamicTools(p.dynamicTools ?? p.dynamic_tools);
+    if (p.nativeQuestions !== undefined && typeof p.nativeQuestions !== "boolean") {
+      throw new RpcException(E.InvalidParams, "nativeQuestions must be a boolean");
+    }
     const thread = createThread(cwd, permMode);
+    if (p.nativeQuestions === true) thread.nativeQuestions = new NativeQuestions();
     if (dynamicTools.length > 0) {
       thread.dynamicTools = dynamicTools;
       thread.toolBridge = this.createBridge(dynamicTools, conn);
@@ -429,6 +438,7 @@ export class ClaudeAppServer {
       forked.dynamicTools = src.dynamicTools;
       forked.toolBridge = this.createBridge(src.dynamicTools);
     }
+    if (src.nativeQuestions) forked.nativeQuestions = new NativeQuestions();
     this.threads.set(forked.id, forked);
 
     return { thread: { id: forked.id, forked_from: src.id, created_at: forked.created_at } };
@@ -486,7 +496,7 @@ export class ClaudeAppServer {
           // assistant prose that happens to repeat a refusal.
           ...(turn.provider_error ? { provider_error: turn.provider_error } : {}),
         }));
-      });
+      }).finally(() => thread.nativeQuestions?.close());
     });
 
     // Return nested format for Codex protocol compatibility
@@ -529,7 +539,7 @@ export class ClaudeAppServer {
 
     turn.status = "interrupted";
     turn.completed_at = Date.now();
-    thread.active_turn_id = undefined;
+    if (!thread.nativeQuestions) thread.active_turn_id = undefined;
 
     return { turn_id: turn.id, status: "interrupted" };
   }
@@ -570,7 +580,10 @@ export class ClaudeAppServer {
     turn: Turn,
     conn: ConnectionState,
     model?: string,
+    resumed = false,
   ): Promise<void> {
+    const previousUsage = resumed ? { usage: turn.usage, cost_usd: turn.cost_usd, cost_usd_raw: turn.cost_usd_raw } : undefined;
+    if (resumed) { turn.usage = undefined; turn.cost_usd = undefined; turn.cost_usd_raw = undefined; }
     // Serve orchestrator-declared tools to this turn's claude subprocess and
     // route their invocations back over the connection that started the turn.
     if (thread.toolBridge) {
@@ -590,6 +603,7 @@ export class ClaudeAppServer {
       env:   { ...process.env, CLAUDECODE: undefined } as NodeJS.ProcessEnv,
     });
     turn.process = proc;
+    const interruptTimer = resumed && turn.abortController.signal.aborted ? setTimeout(() => proc.kill("SIGKILL"), 5000) : undefined;
 
     // Register exit/error promise BEFORE reading stdout so we never miss
     // early events (e.g. spawn failures where 'error' fires immediately).
@@ -604,7 +618,7 @@ export class ClaudeAppServer {
     });
 
     // Write user content to stdin, then close it
-    const stdinContent = turn.user_content;
+    const stdinContent = resumed ? "" : turn.user_content;
     this.log(`stdin: ${JSON.stringify(stdinContent)}`);
     try {
       proc.stdin.write(stdinContent, "utf-8");
@@ -622,9 +636,8 @@ export class ClaudeAppServer {
     });
 
     // Abort → kill the subprocess
-    turn.abortController.signal.addEventListener("abort", () => {
-      proc.kill("SIGTERM");
-    }, { once: true });
+    const kill = () => { proc.kill("SIGTERM"); };
+    turn.abortController.signal.addEventListener("abort", kill, { once: true });
 
     // Parse stdout as NDJSON events
     const rl = readline.createInterface({ input: proc.stdout, terminal: false });
@@ -633,6 +646,7 @@ export class ClaudeAppServer {
     const partialText = new Map<string, string>();   // messageId → accumulated text
     const partialThink = new Map<string, string>();  // messageId → accumulated thinking
 
+    let deferred: ReturnType<typeof deferredQuestion>;
     for await (const line of rl) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -641,11 +655,15 @@ export class ClaudeAppServer {
       let event: ClaudeStreamEvent;
       try { event = JSON.parse(trimmed) as ClaudeStreamEvent; } catch { continue; }
 
+      if (thread.nativeQuestions && event.type === "result") deferred = deferredQuestion(event);
       this.processClaudeEvent(event, thread, turn, conn, partialText, partialThink, trimmed);
     }
 
     // Wait for process to exit (listeners already registered above)
     const exitCode = await exitPromise;
+    turn.abortController.signal.removeEventListener("abort", kill);
+    clearTimeout(interruptTimer);
+    addNativeUsage(turn, previousUsage);
 
     // Treat 0 and 130 (SIGINT) as OK; spawn errors and non-zero exits are failures
     const aborted = turn.abortController.signal.aborted;
@@ -662,6 +680,10 @@ export class ClaudeAppServer {
       );
     }
 
+    if (thread.nativeQuestions && deferred && !turn.abortController.signal.aborted) {
+      await thread.nativeQuestions.answer(deferred, thread, turn, conn, this.nativeRequests);
+      return this.runClaudeTurn(thread, turn, conn, model, true);
+    }
     turn.status       = aborted ? "interrupted" : "completed";
     turn.completed_at = Date.now();
     thread.active_turn_id = undefined;
@@ -693,35 +715,7 @@ export class ClaudeAppServer {
   // ── Build claude args ──────────────────────────────────────────────────────
 
   private buildClaudeArgs(thread: Thread, model?: string): string[] {
-    const args = [
-      "--print",
-      "--output-format", "stream-json",
-      "--verbose",
-      "--include-partial-messages",
-      "--permission-mode", thread.permission_mode,
-    ];
-
-    if (model) args.push("--model", model);
-
-    // Expose dynamic tools via the in-process MCP bridge. Allowlist each
-    // mcp__aiur__<name> so calls run headless under every permission mode.
-    if (thread.toolBridge?.socketPath) {
-      args.push("--mcp-config", thread.toolBridge.mcpConfig());
-      args.push("--allowedTools", thread.toolBridge.allowedTools());
-    }
-
-    if (thread.forkFrom && !thread.cliSessionId) {
-      // First turn of a forked thread: resume source and fork
-      args.push("--resume", thread.forkFrom.cliSessionId, "--fork-session");
-    } else if (!thread.cliSessionId) {
-      // First turn of a brand-new thread: create session with our thread id
-      args.push("--session-id", thread.id);
-    } else {
-      // Subsequent turns: resume the existing session
-      args.push("--resume", thread.cliSessionId);
-    }
-
-    return args;
+    return buildClaudeArgs(thread, model);
   }
 
   // ── Process a single stream-json event ────────────────────────────────────

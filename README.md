@@ -98,7 +98,7 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 
 // Server → Client (response)
 { "jsonrpc": "2.0", "result": {
-    "server": { "name": "aiur-claude", "version": "1.1.0" },
+    "server": { "name": "aiur-claude", "version": "1.3.0" },
     "capabilities": { ... }
   }, "id": 1 }
 
@@ -114,7 +114,7 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `thread/start` | `{ cwd?, permissionMode?, dynamicTools? }` | `{ thread: { id, created_at } }` |
+| `thread/start` | `{ cwd?, permissionMode?, dynamicTools?, nativeQuestions? }` | `{ thread: { id, created_at } }` |
 | `thread/resume` | `{ threadId }` | `{ thread: { id, turns[], cwd, … } }` |
 | `thread/fork` | `{ threadId }` | `{ thread: { id, forked_from, created_at } }` |
 
@@ -160,6 +160,55 @@ After `turn/start`, the server streams these notifications:
 | `turn/permission_denied` | Permission denied — `{ turn_id, denials }` |
 
 ---
+
+## Native questions
+
+Start a thread with `nativeQuestions: true` to forward Claude's `AskUserQuestion`
+as a server-to-client JSON-RPC request. The flag defaults to false; threads
+without it retain their existing CLI arguments. This requires a Claude CLI with
+`PreToolUse` deferral support (the recorded compatibility spike used 2.1.299).
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"cwd":"/project","nativeQuestions":true}}
+```
+
+The adapter installs a thread-local `AskUserQuestion` hook and MCP permission host
+through CLI arguments. A deferred question closes the CLI subprocess but keeps
+the app-server turn open. It sends `item/tool/requestUserInput` with camel-case
+`threadId`, `turnId`, `itemId` and `questions`. Each question includes `id`,
+`header`, `question`, `options`, `multiSelect`, `isOther: true`, and
+`isSecret: false`. Its ID is the first 16 hexadecimal characters of SHA-256 of the
+exact question text, stable across resumes.
+
+Reply using the request's JSON-RPC `id` and this result shape:
+
+```json
+{"answers":{"<question-id>":{"answers":["red","blue"]}}}
+```
+
+Answers resume the same CLI session and app-server turn with empty stdin. The
+hook receives answers keyed by question **text**, with multiple choices joined
+by `, `. Usage and costs include every subprocess in the turn. A single answer
+starting with `Your question is recorded as Command` is passed to every question
+as a release instruction; Claude can then end the turn while the application
+collects an answer separately.
+
+There is no adapter answer timeout. `turn/interrupt` cancels the pending request,
+resumes once with a deny instruction, and interrupts the turn; that cleanup
+subprocess is bounded to five seconds. Late answers are ignored. Client RPC
+errors or malformed answers fail the turn. If deferral is ignored, the permission
+host denies the question with an instruction to stop and use `decision.requested`.
+In `bypassPermissions` mode it allows non-question inputs unchanged. In other
+permission modes it denies callbacks that still require approval, preserving the
+`turn/permission_denied` and `approval/respond` retry path. Dynamic tools and native questions can
+be enabled together; forked threads inherit the opt-in with separate hook state.
+
+Runtime files are private and removed when the turn ends. App-server restart
+loses its in-memory threads and pending requests, even though Claude's session
+may persist. A disconnected client leaves its request held; a reconnected client
+can interrupt the thread, but cannot answer a request from the old connection.
+This bridge alone does not recover those sessions or add Aiur-side
+Command handling. Do not enable it with a client that cannot answer these requests.
 
 ## Dynamic tools
 
