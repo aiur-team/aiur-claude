@@ -6,6 +6,7 @@
  * Item     An atomic unit of content (text, tool call, file change, …).
  */
 
+import type { NativeQuestions } from "./native-questions.js";
 import type { ChildProcess } from "child_process";
 import type { DynamicToolBridge } from "./dynamic-tools.js";
 
@@ -166,6 +167,9 @@ export interface Thread {
 
   /** In-process MCP server exposing dynamicTools to the claude subprocess. */
   toolBridge?: DynamicToolBridge;
+
+  /** Opt-in AskUserQuestion defer/resume integration. */
+  nativeQuestions?: NativeQuestions;
 
   /**
    * Billing relationship fact derived from the CLI init event's apiKeySource
