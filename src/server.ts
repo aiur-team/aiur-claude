@@ -17,16 +17,15 @@
  * claude subprocess through an in-process MCP bridge (see dynamic-tools.ts);
  * invocations round-trip to the client as item/tool/call JSON-RPC requests.
  */
-
 import { execFile, execFileSync, spawn } from "child_process";
 import * as os from "os";
 import * as readline from "readline";
 import { v4 as uuid } from "uuid";
 import { addNativeUsage } from "./native-usage.js";
 import { buildClaudeArgs } from "./claude-args.js";
+import { UnheldQuestions } from "./native-unheld.js";
 import { NativeQuestions, NativeQuestionRequests, deferredQuestion } from "./native-questions.js";
 import { fetchUtilization, type Utilization } from "./utilization.js";
-
 // Resolve the full path to the claude binary once at startup so that spawn()
 // can find it even when ~/.local/bin is not in the inherited PATH.
 function resolveClaude(): string {
@@ -37,9 +36,7 @@ function resolveClaude(): string {
   }
   return "claude"; // fall back; spawn will throw a clear error if not found
 }
-
 const CLAUDE_BIN = resolveClaude();
-
 import {
   ok, rpcErr, notif,
   isRequest, isResponse,
@@ -54,9 +51,7 @@ import type {
 import { parseSteerContent } from "./steer.js";
 import { BUILTIN_SKILLS } from "./tools.js";
 import { DynamicToolBridge, PendingEngineCalls, parseDynamicTools } from "./dynamic-tools.js";
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
 /**
  * The CLI's error class for an assistant event it synthesized from an API
  * error, or undefined for text the model wrote.
@@ -578,7 +573,7 @@ export class ClaudeAppServer {
     turn: Turn,
     conn: ConnectionState,
     model?: string,
-    resumed = false,
+    resumed = false, releasePrompt = "",
   ): Promise<void> {
     const previousUsage = resumed ? { usage: turn.usage, cost_usd: turn.cost_usd, cost_usd_raw: turn.cost_usd_raw } : undefined;
     if (resumed) { turn.usage = undefined; turn.cost_usd = undefined; turn.cost_usd_raw = undefined; }
@@ -616,7 +611,7 @@ export class ClaudeAppServer {
     });
 
     // Write user content to stdin, then close it
-    const stdinContent = resumed ? "" : turn.user_content;
+    const stdinContent = resumed ? releasePrompt : turn.user_content;
     this.log(`stdin: ${JSON.stringify(stdinContent)}`);
     try {
       proc.stdin.write(stdinContent, "utf-8");
@@ -645,6 +640,7 @@ export class ClaudeAppServer {
     const partialThink = new Map<string, string>();  // messageId → accumulated thinking
 
     let deferred: ReturnType<typeof deferredQuestion>;
+    const unheld = new UnheldQuestions();
     for await (const line of rl) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -653,6 +649,7 @@ export class ClaudeAppServer {
       let event: ClaudeStreamEvent;
       try { event = JSON.parse(trimmed) as ClaudeStreamEvent; } catch { continue; }
 
+      if (thread.nativeQuestions) unheld.observe(event);
       if (thread.nativeQuestions && event.type === "result") deferred = deferredQuestion(event);
       this.processClaudeEvent(event, thread, turn, conn, partialText, partialThink, trimmed);
     }
@@ -678,11 +675,12 @@ export class ClaudeAppServer {
       );
     }
 
-    if (thread.nativeQuestions && deferred && !turn.abortController.signal.aborted) {
-      await thread.nativeQuestions.answer(deferred, thread, turn, conn, this.nativeRequests);
-      return this.runClaudeTurn(thread, turn, conn, model, true);
+    const release = thread.nativeQuestions && !aborted ? await unheld.release(deferred, thread, turn, conn, this.nativeRequests) : "";
+    if (thread.nativeQuestions && (deferred || release) && !turn.abortController.signal.aborted) {
+      if (deferred) await thread.nativeQuestions.answer(deferred, thread, turn, conn, this.nativeRequests);
+      return this.runClaudeTurn(thread, turn, conn, model, true, release || "");
     }
-    turn.status       = aborted ? "interrupted" : "completed";
+    turn.status       = turn.abortController.signal.aborted ? "interrupted" : "completed";
     turn.completed_at = Date.now();
     thread.active_turn_id = undefined;
 

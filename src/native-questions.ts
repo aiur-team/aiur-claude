@@ -31,8 +31,8 @@ export function deferredQuestion(event: unknown): DeferredQuestion | undefined {
   return tool;
 }
 
-export function toRequestUserInput(tool: DeferredQuestion, threadId: string, turnId: string) {
-  return { threadId, turnId, itemId: tool.id, questions: tool.input.questions.map(q => ({
+export function toRequestUserInput(tool: DeferredQuestion, threadId: string, turnId: string, holdable = true) {
+  return { threadId, turnId, itemId: tool.id, ...(holdable ? {} : { holdable }), questions: tool.input.questions.map(q => ({
     id: questionId(q.question), header: q.header, question: q.question,
     isOther: true, isSecret: false, options: q.options, multiSelect: q.multiSelect === true,
   })) };
