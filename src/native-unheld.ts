@@ -19,8 +19,13 @@ export class UnheldQuestions {
     const messages: string[] = [];
     for (const tool of this.candidates.values()) {
       if (tool.id === deferred?.id || turn.abortController.signal.aborted) continue;
-      const result = await requests.request(conn, toRequestUserInput(tool, thread.id, turn.id, false), turn.abortController.signal);
-      messages.push(...Object.values(toUpdatedInput(tool, result).answers));
+      try {
+        const result = await requests.request(conn, toRequestUserInput(tool, thread.id, turn.id, false), turn.abortController.signal);
+        messages.push(...Object.values(toUpdatedInput(tool, result).answers));
+      } catch (error) {
+        if (!turn.abortController.signal.aborted) throw error;
+        return "";
+      }
     }
     this.candidates.clear();
     return [...new Set(messages)].join("\n");

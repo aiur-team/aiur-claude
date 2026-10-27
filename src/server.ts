@@ -680,7 +680,7 @@ export class ClaudeAppServer {
       if (deferred) await thread.nativeQuestions.answer(deferred, thread, turn, conn, this.nativeRequests);
       return this.runClaudeTurn(thread, turn, conn, model, true, release || "");
     }
-    turn.status       = aborted ? "interrupted" : "completed";
+    turn.status       = turn.abortController.signal.aborted ? "interrupted" : "completed";
     turn.completed_at = Date.now();
     thread.active_turn_id = undefined;
 

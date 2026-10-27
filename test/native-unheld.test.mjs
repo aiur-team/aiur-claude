@@ -27,7 +27,7 @@ let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{
   const start=await call('thread/start',{cwd:dir,nativeQuestions:true,permissionMode:'bypassPermissions'});
   await call('turn/start',{threadId:start.result.thread.id,content:'ask'});
   const request=await waitFor(()=>conn.sent.find(m=>m.method==='item/tool/requestUserInput'));
-  return {server,conn,request,log};
+  return {server,conn,request,log,call,threadId:start.result.thread.id};
 }
 
 test('multi-call without terminal deferral releases and sends Command text into the same session', async t=>{
@@ -48,4 +48,14 @@ test('multi-call terminal deferral stays holdable and resumes with empty stdin',
   await waitFor(()=>conn.sent.find(m=>m.method==='turn/completed'));
   assert.deepEqual(readFileSync(log,'utf8').trim().split('\n').map(JSON.parse),['ask','']);
   assert.equal(conn.sent.filter(m=>m.method==='item/tool/requestUserInput').length,1);
+});
+
+
+test('interrupting an unheld release ends the turn as interrupted without resuming', async t=>{
+  const {conn,call,threadId,log}=await setup(t,false);
+  await call('turn/interrupt',{threadId});
+  const completed=await waitFor(()=>conn.sent.find(m=>m.method==='turn/completed'));
+  assert.equal(completed.params.status,'interrupted');
+  assert.equal(conn.sent.some(m=>m.method==='turn/failed'),false);
+  assert.deepEqual(readFileSync(log,'utf8').trim().split('\n').map(JSON.parse),['ask']);
 });
