@@ -27,8 +27,11 @@ let stdin=''; process.stdin.on('data', b => stdin+=b); process.stdin.on('end', (
  const args=process.argv.slice(2);
  const settings=JSON.parse(args[args.indexOf('--settings')+1]);
  const command=settings.hooks.PreToolUse[0].hooks[0].command;
+ const hookDirectory=cp.execFileSync('/bin/sh',['-c','set -- '+command+'; printf "%s" "$4"'],{encoding:'utf8'});
+ const answerPath=require('path').join(hookDirectory,'answer.json');
+ const answerMode=fs.existsSync(answerPath) ? fs.statSync(answerPath).mode & 0o777 : null;
  const decision=JSON.parse(cp.execFileSync('/bin/sh',['-c',command],{input:JSON.stringify(${JSON.stringify({tool_name:'AskUserQuestion',tool_use_id:tool.id,tool_input:tool.input})})})).hookSpecificOutput;
- fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,stdin,decision})+'\\n');
+ fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,stdin,decision,answerMode})+'\\n');
  if (decision.permissionDecision==='defer') process.stdout.write(${JSON.stringify(raw)});
  else { console.log(JSON.stringify({type:'assistant',message:{id:'answered',content:[{type:'text',text:JSON.stringify(decision)}]}})); console.log(JSON.stringify({type:'result',subtype:'success',session_id:${JSON.stringify(terminal.session_id)},total_cost_usd:0.01,usage:{input_tokens:10,output_tokens:20}})); }
 });
@@ -76,6 +79,8 @@ test('nativeQuestions off keeps complete legacy argv; invalid flag is rejected',
 });
 
 test('deferred subprocess holds same turn then resumes with hook answer and empty stdin', async t => {
+  const previousUmask=process.umask(0o022);
+  t.after(()=>process.umask(previousUmask));
   const {server,conn,call,threadId,log}=await setup(t);
   const turn=await call('turn/start',{threadId,content:'ask a question'});
   const req=await waitFor(()=>request(conn));
@@ -93,9 +98,11 @@ test('deferred subprocess holds same turn then resumes with hook answer and empt
   assert.equal(records[1].stdin,'');
   assert.equal(records[1].args[records[1].args.indexOf('--resume')+1],terminal.session_id);
   assert.equal(records[1].decision.permissionDecision,'allow');
+  assert.equal(records[1].answerMode,0o600);
   assert.equal(records[1].decision.updatedInput.answers[tool.input.questions[0].question],'red');
   assert.equal(completed(conn).params.turn_id,turn.result.turn.id);
   assert.equal(completed(conn).params.cost_usd_raw,'0.0426653');
+  assert.equal(completed(conn).params.cost_usd,0.0426653);
   assert.equal(completed(conn).params.usage.input_tokens,terminal.usage.input_tokens+10);
   assert.equal(completed(conn).params.usage.output_tokens,terminal.usage.output_tokens+20);
   assert.equal(conn.sent.filter(m=>m.method==='turn/started').length,1);
@@ -127,10 +134,13 @@ test('interrupt denies pending tool on resume and late response cannot revive it
 });
 
 test('native config preserves dynamic tools and hook leaves Bash alone', async t => {
-  const {server,threadId}=await setup(t,{dynamicTools:TOOLS});
+  const {server,threadId}=await setup(t,{dynamicTools:TOOLS,permissionMode:'default'});
   const thread=server.getThread(threadId);
   await thread.toolBridge.start(); t.after(()=>thread.toolBridge.close());
   const args=server.buildClaudeArgs(thread);
+  assert.ok(args.includes('--allowedTools'));
+  assert.equal(args[args.indexOf('--allowedTools')+1],'mcp__aiur__aiur_declare_blocker,mcp__aiur__emit_alert');
+  assert.equal(args[args.indexOf('--permission-mode')+1],'default');
   const config=JSON.parse(args[args.indexOf('--mcp-config')+1]);
   assert.equal(config.mcpServers.aiur.args[1],thread.toolBridge.socketPath);
   assert.equal(config.mcpServers.aiur_native.args[0],runtime);
@@ -187,4 +197,36 @@ test('permission host cannot approve non-question tools in guarded modes', () =>
     const out=JSON.parse(execFileSync(process.execPath,[runtime,'host',mode],{input:messages.map(JSON.stringify).join('\n')+'\n'}));
     assert.equal(JSON.parse(out.result.content[0].text).behavior,'deny');
   }
+});
+
+
+test('thread fork inherits native questions and answers on the forked turn', async t => {
+  const {server,conn,call,threadId,log}=await setup(t);
+  await call('turn/start',{threadId,content:'ask before forking'});
+  const parentRequest=await waitFor(()=>request(conn));
+  await server.handleMessage({jsonrpc:'2.0',id:parentRequest.id,result:{answers:{[parentRequest.params.questions[0].id]:{answers:['red']}}}},conn);
+  await waitFor(()=>completed(conn));
+
+  const forkResponse=await call('thread/fork',{threadId});
+  const forkId=forkResponse.result.thread.id;
+  const fork=server.getThread(forkId);
+  t.after(()=>fork.nativeQuestions?.close());
+  const forkArgs=server.buildClaudeArgs(fork);
+  assert.ok(forkArgs.includes('--permission-prompt-tool'));
+  assert.ok(forkArgs.includes('--fork-session'));
+  assert.equal(forkArgs[forkArgs.indexOf('--resume')+1],terminal.session_id);
+  assert.notEqual(fork.nativeQuestions,server.getThread(threadId).nativeQuestions);
+
+  const forkTurn=await call('turn/start',{threadId:forkId,content:'ask on the fork'});
+  const forkRequest=await waitFor(()=>conn.sent.find(m=>m.method==='item/tool/requestUserInput' && m.params.threadId===forkId));
+  assert.equal(forkRequest.params.turnId,forkTurn.result.turn.id);
+  assert.equal(forkRequest.params.questions[0].id,parentRequest.params.questions[0].id);
+  await server.handleMessage({jsonrpc:'2.0',id:forkRequest.id,result:{answers:{[forkRequest.params.questions[0].id]:{answers:['blue']}}}},conn);
+  const forkCompleted=await waitFor(()=>conn.sent.find(m=>m.method==='turn/completed' && m.params.thread_id===forkId));
+  assert.equal(forkCompleted.params.turn_id,forkTurn.result.turn.id);
+  assert.equal(forkCompleted.params.status,'completed');
+  const records=calls(log);
+  assert.equal(records.length,4);
+  assert.ok(records[2].args.includes('--fork-session'));
+  assert.equal(records[3].decision.updatedInput.answers[tool.input.questions[0].question],'blue');
 });
