@@ -98,7 +98,7 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 
 // Server → Client (response)
 { "jsonrpc": "2.0", "result": {
-    "server": { "name": "aiur-claude", "version": "1.1.0" },
+    "server": { "name": "aiur-claude", "version": "1.2.0" },
     "capabilities": { ... }
   }, "id": 1 }
 
@@ -123,10 +123,18 @@ Messages are newline-delimited JSON, following [JSON-RPC 2.0](https://www.jsonrp
 | Method | Params | Returns |
 |--------|--------|---------|
 | `turn/start` | `{ threadId, content, model? }` or `{ threadId, input: [{ type, text }] }` | `{ turn: { id } }` |
-| `turn/steer` | `{ threadId, content }` | `{ turn_id }` |
+| `turn/steer` | `{ threadId, content }` or `{ threadId, input: [{ type: "text", text }] }` | `{ turn_id, note }` |
 | `turn/interrupt` | `{ threadId }` | `{ turn_id, status }` |
 
 `turn/start` returns immediately; the agent streams back **notifications** until `turn/completed`.
+
+Starting in **1.2.0**, `turn/steer` queues non-empty text for the next turn on
+this thread; it does not inject text into the running turn. Accepted messages
+are prepended once, in arrival order, before the next `turn/start` prompt.
+Text remains queued if the active turn is interrupted or fails. Empty or
+non-string text returns `InvalidParams`; an idle thread returns `NoActiveTurn`.
+Threads and their queues are held in memory, so queued text is lost when the
+server restarts.
 
 ### Discovery
 
