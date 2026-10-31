@@ -1,0 +1,146 @@
+# Publishes aiur-claude to npm using OIDC trusted publishing.
+#
+# There is no npm token. npm authenticates this workflow directly through
+# GitHub's OIDC provider, which is why `id-token: write` is required and why
+# nothing here reads a secret.
+#
+# Channels:
+#   dry-run  default for workflow_dispatch. Builds, smokes, and runs
+#            `npm publish --dry-run`. Nothing reaches the registry.
+#   stable   push of a v* tag, or workflow_dispatch with channel=stable.
+#            Version comes from package.json; a tag must agree with it.
+#            Publishes under `latest`.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        options:
+          - dry-run
+          - stable
+        default: dry-run
+
+permissions:
+  contents: read
+
+name: release-npm
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for OIDC trusted publishing. Without it npm cannot exchange
+      # the workflow identity for a publish credential.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No `registry-url` here on purpose. It writes an empty `_authToken` into
+      # .npmrc, npm then believes auth is already configured, skips the OIDC
+      # exchange entirely, and fails with a misleading ENEEDAUTH.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Trusted publishing needs npm >= 11.5.1. The npm bundled with Node 24 is
+      # newer than Node 22's 10.9.8, but pin it explicitly and assert, so a
+      # runner image change fails loudly instead of as an opaque auth error.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          version="$(npm --version)"
+          echo "npm $version"
+          NPM_VERSION="$version" node -e '
+            const [maj, min, patch] = process.env.NPM_VERSION.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
+            if (!ok) {
+              console.error(`npm ${process.env.NPM_VERSION} is too old for trusted publishing (need >= 11.5.1)`);
+              process.exit(1);
+            }
+          '
+
+      - name: Assert no _authToken is configured
+        run: |
+          if npm config get //registry.npmjs.org/:_authToken 2>/dev/null | grep -qv '^undefined$'; then
+            echo "An _authToken is configured; OIDC will be skipped. Remove it." >&2
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # A package published without working build output installs fine and
+      # fails at runtime. Prove the entrypoint executes before shipping it.
+      - name: Smoke the built entrypoint
+        run: |
+          test -x dist/index.js
+          actual="$(node dist/index.js --version)"
+          expected="$(node -p 'require("./package.json").version')"
+          if [ "$actual" != "$expected" ]; then
+            echo "binary reports '$actual' but package.json says '$expected'" >&2
+            exit 1
+          fi
+          echo "smoke ok: $actual"
+
+      - name: Resolve channel
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            channel=stable
+          else
+            channel="${{ inputs.channel }}"
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "resolved channel: $channel"
+
+      # A tag must agree with package.json, or the published version silently
+      # differs from the tag someone will later use to find it.
+      - name: Verify tag matches package.json
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json $pkg" >&2
+            exit 1
+          fi
+
+      # `npm publish --dry-run` exits 0 even when the OIDC config is broken, so
+      # the exit code alone proves nothing. Require the exchange to be visible
+      # in the output.
+      - name: Publish (dry run)
+        if: steps.channel.outputs.channel == 'dry-run'
+        run: |
+          npm publish --dry-run --access public 2>&1 | tee publish.log
+          if ! grep -qiE 'oidc|trusted publish' publish.log; then
+            echo "No OIDC exchange observed; trusted publishing is not configured for this workflow." >&2
+            exit 1
+          fi
+          echo "dry run ok: OIDC exchange observed"
+
+      - name: Publish
+        if: steps.channel.outputs.channel == 'stable'
+        run: npm publish --access public --tag latest
+
+      - name: Verify the published version
+        if: steps.channel.outputs.channel == 'stable'
+        run: |
+          pkg="$(node -p 'require("./package.json").version')"
+          sleep 10
+          latest="$(npm view aiur-claude version)"
+          if [ "$latest" != "$pkg" ]; then
+            echo "registry reports $latest, expected $pkg" >&2
+            exit 1
+          fi
+          echo "published and verified: $latest"
