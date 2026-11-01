@@ -170,7 +170,7 @@ export function sanitizeRateLimit(
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SERVER_NAME    = "aiur-claude";
-const SERVER_VERSION = "1.3.0";
+const SERVER_VERSION = "1.3.1";
 
 const AVAILABLE_MODELS = [
   { id: "claude-opus-4-6",   name: "Claude Opus 4.6",   aliases: ["opus"] },

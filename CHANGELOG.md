@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+- The Claude MCP bridge socket can live in `AIUR_MCP_SOCKET_DIR`, keeping the
+  AF_UNIX path under 108 bytes. The directory is created with mode 0700. When
+  the variable is unset, the socket stays in `os.tmpdir()`.
+
 ## 1.3.0
 
 First npm release since 1.0.0. Versions 1.1.0 (git tag only) and 1.2.0 were
