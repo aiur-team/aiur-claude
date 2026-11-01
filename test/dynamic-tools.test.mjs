@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -98,6 +100,34 @@ test("MCP handshake and tools/list surface exact tool names", async (t) => {
 
   const pong = await client.request(3, "ping", {});
   assert.deepEqual(pong.result, {});
+});
+
+test("MCP bridge uses AIUR_MCP_SOCKET_DIR when set", async (t) => {
+  const previous = process.env.AIUR_MCP_SOCKET_DIR;
+  const socketDir = mkdtempSync(path.join("/tmp", "aiur-mcp-socket-dir-"));
+  process.env.AIUR_MCP_SOCKET_DIR = socketDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AIUR_MCP_SOCKET_DIR;
+    else process.env.AIUR_MCP_SOCKET_DIR = previous;
+    rmSync(socketDir, { recursive: true, force: true });
+  });
+
+  const { bridge } = startedBridge(t);
+  const socketPath = await bridge.start();
+  assert.equal(path.dirname(socketPath), socketDir);
+  assert.match(path.basename(socketPath), /^aiur-mcp-\d+-\d+\.sock$/);
+});
+
+test("MCP bridge keeps using os.tmpdir when AIUR_MCP_SOCKET_DIR is unset", async (t) => {
+  const previous = process.env.AIUR_MCP_SOCKET_DIR;
+  delete process.env.AIUR_MCP_SOCKET_DIR;
+  t.after(() => {
+    if (previous !== undefined) process.env.AIUR_MCP_SOCKET_DIR = previous;
+  });
+
+  const { bridge } = startedBridge(t);
+  const socketPath = await bridge.start();
+  assert.equal(path.dirname(socketPath), os.tmpdir());
 });
 
 test("claude CLI flag payloads expose the bridge", async (t) => {

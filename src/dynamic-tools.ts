@@ -26,7 +26,7 @@
  * structured MCP tool errors (isError: true) — never a crash.
  */
 
-import { chmodSync, existsSync, rmSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, rmSync } from "fs";
 import * as net from "net";
 import * as os from "os";
 import * as path from "path";
@@ -210,7 +210,14 @@ export class DynamicToolBridge {
       throw new Error(`MCP shim not found at ${shim} — run the build first (npm run build)`);
     }
 
-    const socketPath = path.join(os.tmpdir(), `aiur-mcp-${process.pid}-${++bridgeSeq}.sock`);
+    const socketDir = process.env.AIUR_MCP_SOCKET_DIR || os.tmpdir();
+
+    if (process.env.AIUR_MCP_SOCKET_DIR) {
+      mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+      chmodSync(socketDir, 0o700);
+    }
+
+    const socketPath = path.join(socketDir, `aiur-mcp-${process.pid}-${++bridgeSeq}.sock`);
     rmSync(socketPath, { force: true });
 
     const server = net.createServer((socket) => this.handleConnection(socket));
