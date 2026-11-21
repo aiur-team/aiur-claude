@@ -73,7 +73,7 @@ test('answers preserve input and join multi selections; single release covers al
 
 test('nativeQuestions off keeps complete legacy argv; invalid flag is rejected', async t => {
   const {server,call,threadId}=await setup(t,{nativeQuestions:false});
-  assert.deepEqual(server.buildClaudeArgs(server.getThread(threadId)),['--print','--output-format','stream-json','--verbose','--include-partial-messages','--permission-mode','bypassPermissions','--session-id',threadId]);
+  assert.deepEqual(server.buildClaudeArgs(server.getThread(threadId)),['--print','--output-format','stream-json','--verbose','--include-partial-messages','--permission-mode','bypassPermissions','--setting-sources','project,local','--strict-mcp-config','--session-id',threadId]);
   const response=await call('thread/start',{nativeQuestions:'true'});
   assert.equal(response.error.code,-32602);
 });

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Run `claude` with `--setting-sources project,local --strict-mcp-config`, so
+  user-scope hooks, plugins and MCP servers stay out of orchestrated turns.
+  `AIUR_CLAUDE_SETTING_SOURCES` overrides the sources.
+- A turn completes at claude's `result` event. A claude still running
+  `AIUR_CLAUDE_RESULT_GRACE_MS` (default 10 s) later is killed instead of
+  holding the turn open until the orchestrator's stall timeout.
+
 ## 1.3.1
 
 - The Claude MCP bridge socket can live in `AIUR_MCP_SOCKET_DIR`, keeping the

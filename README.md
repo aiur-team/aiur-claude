@@ -269,6 +269,19 @@ When claude invokes a tool, the server sends a JSON-RPC **request** to the clien
 
 ---
 
+## Settings isolation and turn end
+
+Each turn runs `claude` with `--setting-sources project,local --strict-mcp-config`,
+so user-scope settings, plugins, hooks and MCP servers do not load. Only
+project and local settings and the server's own `--mcp-config` apply. Set
+`AIUR_CLAUDE_SETTING_SOURCES` (for example `user,project,local`) to load other sources.
+
+A turn ends at claude's `result` event. If claude is still running
+`AIUR_CLAUDE_RESULT_GRACE_MS` (default 10000) after it, for example because an async
+Stop hook holds it open, the server kills it and completes the turn normally.
+
+---
+
 ## Example session (stdio)
 
 ```bash
