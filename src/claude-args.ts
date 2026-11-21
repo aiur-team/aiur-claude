@@ -7,6 +7,11 @@ export function buildClaudeArgs(thread: Thread, model?: string): string[] {
     "--verbose",
     "--include-partial-messages",
     "--permission-mode", thread.permission_mode,
+    // Isolate from user-scope settings: a user plugin's Stop hook (or MCP
+    // server) must not run inside an orchestrated turn. Project and local
+    // settings stay, since the workspace ships its own.
+    "--setting-sources", process.env.AIUR_CLAUDE_SETTING_SOURCES || "project,local",
+    "--strict-mcp-config",
   ];
 
   if (model) args.push("--model", model);

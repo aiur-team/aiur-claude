@@ -63,6 +63,12 @@ function providerErrorClass(event: { error?: unknown; is_api_error_message?: unk
 }
 
 /** Provider messages are one-line banners; cap them so a runaway body can't bloat the wire. */
+/** How long claude may outlive its `result` event before it is reaped. */
+function resultExitGraceMs(): number {
+  const raw = Number(process.env.AIUR_CLAUDE_RESULT_GRACE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
+}
+
 function boundedMessage(text: string): string {
   return text.slice(0, 500);
 }
@@ -641,6 +647,9 @@ export class ClaudeAppServer {
 
     let deferred: ReturnType<typeof deferredQuestion>;
     const unheld = new UnheldQuestions();
+    // `result` is the turn's last event. A hook that keeps claude alive past it
+    // (an async Stop hook) must not hold the turn open, so reap claude after a grace.
+    let reapTimer: NodeJS.Timeout | undefined;
     for await (const line of rl) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -651,6 +660,13 @@ export class ClaudeAppServer {
 
       if (thread.nativeQuestions) unheld.observe(event);
       if (thread.nativeQuestions && event.type === "result") deferred = deferredQuestion(event);
+      if (event.type === "result" && !reapTimer) {
+        reapTimer = setTimeout(() => {
+          this.log("claude still running after result; reaping");
+          proc.kill("SIGKILL");
+          rl.close();
+        }, resultExitGraceMs());
+      }
       this.processClaudeEvent(event, thread, turn, conn, partialText, partialThink, trimmed);
     }
 
@@ -658,6 +674,7 @@ export class ClaudeAppServer {
     const exitCode = await exitPromise;
     turn.abortController.signal.removeEventListener("abort", kill);
     clearTimeout(interruptTimer);
+    clearTimeout(reapTimer);
     addNativeUsage(turn, previousUsage);
 
     // Treat 0 and 130 (SIGINT) as OK; spawn errors and non-zero exits are failures

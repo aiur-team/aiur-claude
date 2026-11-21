@@ -46,6 +46,8 @@ test("thread/start without dynamicTools keeps the legacy claude invocation", asy
     "--verbose",
     "--include-partial-messages",
     "--permission-mode", "bypassPermissions",
+    "--setting-sources", "project,local",
+    "--strict-mcp-config",
     "--session-id", thread.id,
   ]);
 });
