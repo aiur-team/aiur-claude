@@ -280,6 +280,11 @@ A turn ends at claude's `result` event. If claude is still running
 `AIUR_CLAUDE_RESULT_GRACE_MS` (default 10000) after it, for example because an async
 Stop hook holds it open, the server kills it and completes the turn normally.
 
+Claude Code's self-updater removes `claude` from PATH while it reinstalls. At
+startup the server waits up to `AIUR_CLAUDE_PROBE_TIMEOUT_MS` (default 60000) for
+the CLI to appear, and a turn whose spawn fails with ENOENT waits the same way and
+spawns once more. Claude runs with `DISABLE_AUTOUPDATER=1`.
+
 ---
 
 ## Example session (stdio)

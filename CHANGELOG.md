@@ -8,6 +8,13 @@
 - A turn completes at claude's `result` event. A claude still running
   `AIUR_CLAUDE_RESULT_GRACE_MS` (default 10 s) later is killed instead of
   holding the turn open until the orchestrator's stall timeout.
+- Wait up to `AIUR_CLAUDE_PROBE_TIMEOUT_MS` (default 60 s) for `claude` to
+  appear on PATH at startup, and say "claude CLI not found on PATH" when it
+  doesn't. Claude Code's self-updater removes the CLI for the length of each
+  reinstall.
+- When spawning claude fails with ENOENT, look it up on PATH again (with the
+  same wait) and spawn once more.
+- Run claude with `DISABLE_AUTOUPDATER=1`, so workers never start a self-update.
 
 ## 1.3.1
 
