@@ -16,10 +16,9 @@
 
 import { ClaudeAppServer } from "./server.js";
 import { startStdio, startWebSocket } from "./transport.js";
-import { execSync } from "child_process";
+import { claudeProbeTimeoutMs, waitForClaude } from "./claude-bin.js";
 import { randomBytes } from "crypto";
 import { networkInterfaces } from "os";
-import { realpathSync } from "fs";
 import { join } from "path";
 import { readFileSync } from "fs";
 import qr from "qrcode-terminal";
@@ -171,25 +170,20 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 // ─── Claude CLI check ─────────────────────────────────────────────────────────
 
-function checkClaude(): string {
-  try {
-    const resolved = execSync("which claude", { stdio: "pipe" }).toString().trim();
-    if (!resolved) throw new Error("not found");
-    // Resolve symlinks so spawn gets the real executable path
-    return realpathSync(resolved);
-  } catch {
-    process.stderr.write(
-      "[aiur-claude] ERROR: `claude` CLI not found.\n" +
-        "Install Claude Code: https://claude.ai/code\n" +
-        "Then log in: claude auth\n",
-    );
-    process.exit(1);
-  }
+async function checkClaude(): Promise<string> {
+  const timeoutMs = claudeProbeTimeoutMs();
+  const found = await waitForClaude(timeoutMs);
+  if (found) return found;
+  process.stderr.write(
+    `[aiur-claude] ERROR: claude CLI not found on PATH (waited ${Math.round(timeoutMs / 1000)} s).\n` +
+      "Install Claude Code: https://claude.ai/code\n",
+  );
+  process.exit(1);
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(HELP + "\n");
@@ -200,7 +194,7 @@ function main() {
     process.exit(0);
   }
 
-  const claudePath = checkClaude();
+  const claudePath = await checkClaude();
   const { transport, port, showQr, debug, tls } = parseArgs(process.argv);
   const server = new ClaudeAppServer(claudePath, debug);
 

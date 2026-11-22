@@ -17,7 +17,8 @@
  * claude subprocess through an in-process MCP bridge (see dynamic-tools.ts);
  * invocations round-trip to the client as item/tool/call JSON-RPC requests.
  */
-import { execFile, execFileSync, spawn } from "child_process";
+import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithStdioTuple } from "child_process";
+import { waitForClaude } from "./claude-bin.js";
 import * as os from "os";
 import * as readline from "readline";
 import { v4 as uuid } from "uuid";
@@ -64,6 +65,23 @@ function providerErrorClass(event: { error?: unknown; is_api_error_message?: unk
 
 /** Provider messages are one-line banners; cap them so a runaway body can't bloat the wire. */
 /** How long claude may outlive its `result` event before it is reaped. */
+/** Resolves once the child is running; rejects with the spawn error otherwise. */
+function spawned(
+  file: string,
+  args: string[],
+  options: SpawnOptionsWithStdioTuple<"pipe", "pipe", "pipe">,
+): Promise<ChildProcessWithoutNullStreams> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(file, args, options);
+    proc.once("spawn", () => { proc.off("error", reject); resolve(proc); });
+    proc.once("error", reject);
+  });
+}
+
+function spawnFailure(err: unknown): Error {
+  return new Error(`Failed to spawn claude: ${(err as Error).message}`);
+}
+
 function resultExitGraceMs(): number {
   const raw = Number(process.env.AIUR_CLAUDE_RESULT_GRACE_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
@@ -251,6 +269,24 @@ export class ClaudeAppServer {
       });
     }
     return this.sourceVersion;
+  }
+
+  /**
+   * Spawn claude, and once more if its path vanished. A self-update elsewhere
+   * reinstalls the CLI, so the path resolved at startup can be missing until
+   * the install finishes.
+   */
+  private async spawnClaude(args: string[], options: SpawnOptionsWithStdioTuple<"pipe", "pipe", "pipe">): Promise<ChildProcessWithoutNullStreams> {
+    try {
+      return await spawned(this.claudePath, args, options);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw spawnFailure(err);
+      const resolved = await waitForClaude();
+      if (!resolved) throw spawnFailure(err);
+      this.log(`claude moved: ${this.claudePath} -> ${resolved}`);
+      this.claudePath = resolved;
+      return await spawned(resolved, args, options).catch((retryErr) => { throw spawnFailure(retryErr); });
+    }
   }
 
   // ── Entry point ────────────────────────────────────────────────────────────
@@ -596,10 +632,12 @@ export class ClaudeAppServer {
     this.log(`spawn: ${this.claudePath} ${args.join(" ")}`);
     this.log(`cwd: ${thread.cwd}`);
 
-    const proc = spawn(this.claudePath, args, {
+    const proc = await this.spawnClaude(args, {
       cwd:   thread.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env:   { ...process.env, CLAUDECODE: undefined } as NodeJS.ProcessEnv,
+      // A worker must not start a self-update: the reinstall removes `claude`
+      // from PATH under every other turn starting meanwhile.
+      env:   { ...process.env, CLAUDECODE: undefined, DISABLE_AUTOUPDATER: "1" } as NodeJS.ProcessEnv,
     });
     turn.process = proc;
     const interruptTimer = resumed && turn.abortController.signal.aborted ? setTimeout(() => proc.kill("SIGKILL"), 5000) : undefined;
